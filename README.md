@@ -1,6 +1,6 @@
 # Padwan Proxy
 
-Serve the Anthropic Messages API (`/v1/messages` + `count_tokens`) on top of any OpenAI-compatible backend, so Anthropic clients (e.g. Claude Code) can use it. Built on [`padwan-llm`](https://github.com/polarsen-io/padwan-llm)'s Anthropic↔OpenAI translation layer, served by [granian](https://github.com/emmett-framework/granian) (RSGI) via [gravier](https://github.com/tokobib/gravier).
+Serve the Anthropic Messages API (`/v1/messages` + `count_tokens`) on top of any OpenAI-compatible backend, so Anthropic clients (e.g. Claude Code) can use it. Built on [`padwan-llm`](https://github.com/polarsen-io/padwan-llm)'s Anthropic↔OpenAI translation layer, served by [granian](https://github.com/emmett-framework/granian) (RSGI) via `gravier`.
 
 ```bash
 export OPENAI_API_KEY=...  # backend key (or pass --api-key-env MY_VAR)
