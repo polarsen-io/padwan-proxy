@@ -1,0 +1,74 @@
+[project]
+name = "padwan-proxy"
+version = "0.1.0"
+description = "Serve the Anthropic Messages API over any OpenAI-compatible backend, so Anthropic clients (e.g. Claude Code) can use it"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { email = "julien.brayere@polarsen.io" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "padwan-llm>=0.9.1",
+    "piou>=0.36.0",
+    "gravier>=0.1.0",
+    "orjson>=3.11",
+]
+
+[project.optional-dependencies]
+# `--trace` observability: Langfuse or OTLP export.
+trace = [
+    "padwan-llm[langfuse]>=0.9.1",
+    "opentelemetry-sdk>=1.44",
+    "opentelemetry-exporter-otlp>=1.44",
+]
+
+[project.scripts]
+padwan-proxy = "padwan_proxy:main"
+
+# until gravier is published on PyPI
+[tool.uv.sources]
+gravier = { path = "../../gravier", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.9.18,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.400",
+    # fake OpenAI backend in tests
+    "starlette>=0.47",
+    "uvicorn>=0.35",
+    # http client for ASGIBridge tests
+    "niquests>=3.21.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=1.0.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.11.0",
+    # keep the trace extra type-checkable/testable in dev
+    "padwan-llm[langfuse]>=0.9.1",
+    "opentelemetry-sdk>=1.44",
+    "opentelemetry-exporter-otlp>=1.44",
+]
+bump = [
+    "commitizen>=4.0.0",
+]
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"
+tag_format = "$version"
+update_changelog_on_bump = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
