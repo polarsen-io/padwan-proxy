@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import uvicorn
@@ -82,21 +82,36 @@ class FakeBackend:
         self.last_body: dict[str, Any] | None = None
         self.stream_chunks: list[dict[str, Any]] = TEXT_CHUNKS
         self.status_code = 200
+        self.calls = 0
+        self.fail_first = 0  # first N calls answer fail_status instead of streaming
+        self.fail_status = 500
+        self.malformed_after: int | None = None  # break the SSE stream after N chunks
+        self.malformed_calls: int | None = None  # ...on the first N calls (default all)
 
     def app(self) -> Starlette:
         async def chat_completions(request: Request) -> Response:
             body: dict[str, Any] = await request.json()
             self.last_body = body
+            self.calls += 1
             if self.status_code != 200:
                 return JSONResponse(
                     {"error": {"message": "bad request"}},
                     status_code=self.status_code,
                 )
+            if self.calls <= self.fail_first:
+                return JSONResponse(
+                    {"error": {"message": "backend down"}},
+                    status_code=self.fail_status,
+                )
             if body.get("stream"):
-                lines = [
-                    f"data: {json.dumps(chunk)}\n\n" for chunk in self.stream_chunks
-                ]
-                lines.append("data: [DONE]\n\n")
+                broken = self.malformed_after is not None and (
+                    self.malformed_calls is None or self.calls <= self.malformed_calls
+                )
+                chunks = self.stream_chunks
+                if broken:
+                    chunks = chunks[: self.malformed_after]
+                lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in chunks]
+                lines.append("data: {not json\n\n" if broken else "data: [DONE]\n\n")
 
                 async def _gen():
                     for line in lines:
@@ -130,6 +145,8 @@ async def proxy():
         model=None,
         base_url=f"http://127.0.0.1:{backend_port}/",
         api_key="test-key",
+        # the (connect, read) shape _make_client uses
+        timeout=cast(float, (10.0, 3600.0)),
     )
     async with client:
         router = build_router(
@@ -251,6 +268,74 @@ async def test_messages_stream_tool_call(proxy):
     assert backend.last_body["tools"][0]["function"]["name"] == "get_weather"
 
 
+# stream retries
+
+
+@pytest.fixture
+def no_backoff(monkeypatch):
+    monkeypatch.setattr("padwan_proxy.proxy._RETRY_BACKOFF", 0.0)
+
+
+async def test_stream_replayed_when_it_fails_before_any_event(
+    proxy, no_backoff, caplog
+):
+    backend, router = proxy
+    backend.malformed_after, backend.malformed_calls = 0, 1
+    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
+        proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    events = _parse_sse(proto)
+    assert [name for name, _ in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    text = "".join(
+        e["delta"]["text"] for _, e in events if e["type"] == "content_block_delta"
+    )
+    assert text == "Hello"  # the failed attempt left nothing behind
+    assert backend.calls == 2
+    assert any("retrying" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "failure, expected_calls",
+    [
+        pytest.param({"malformed_after": 0}, 2, id="retries_exhausted"),
+        pytest.param(
+            {"fail_first": 9, "fail_status": 400}, 1, id="client_error_not_retried"
+        ),
+        pytest.param(
+            {"fail_first": 9, "fail_status": 429}, 1, id="rate_limit_not_retried"
+        ),
+    ],
+)
+async def test_stream_error_reported_in_band(
+    proxy, no_backoff, failure, expected_calls
+):
+    backend, router = proxy
+    for attr, value in failure.items():
+        setattr(backend, attr, value)
+    proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    events = _parse_sse(proto)
+    assert [name for name, _ in events] == ["error"]
+    assert events[0][1]["type"] == "error"
+    assert backend.calls == expected_calls
+
+
+async def test_stream_not_replayed_once_events_reached_the_client(proxy, no_backoff):
+    backend, router = proxy
+    backend.malformed_after = 2
+    proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    names = [name for name, _ in _parse_sse(proto)]
+    assert "content_block_delta" in names
+    assert names[-1] == "error"
+    assert backend.calls == 1
+
+
 IMAGE_BLOCK = {
     "type": "image",
     "source": {"type": "base64", "media_type": "image/png", "data": "aWNv"},
@@ -356,9 +441,9 @@ async def test_unknown_route_404(proxy):
 )
 async def test_requests_logged(proxy, caplog, body_extra, expected_kind):
     _, router = proxy
-    with caplog.at_level(logging.INFO, logger="padwan_proxy.proxy"):
+    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
         await post(router, "/v1/messages", _messages_body(**body_extra))
-    (record,) = [r for r in caplog.records if r.name == "padwan_proxy.proxy"]
+    (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
     message = record.getMessage()
     assert "claude-sonnet-5 → glm-4.6" in message
     assert expected_kind in message
@@ -373,9 +458,9 @@ async def test_requests_logged(proxy, caplog, body_extra, expected_kind):
 async def test_backend_error_logged_as_warning(proxy, caplog):
     backend, router = proxy
     backend.status_code = 400
-    with caplog.at_level(logging.INFO, logger="padwan_proxy.proxy"):
+    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
         await post(router, "/v1/messages", _messages_body())
-    (record,) = [r for r in caplog.records if r.name == "padwan_proxy.proxy"]
+    (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
     assert record.levelno == logging.WARNING
     assert "request failed" in record.getMessage()
 
@@ -430,6 +515,8 @@ def test_make_client_resolution(
     client = _make_client(backend_url, "glm-4.6", api_key_env)
     assert client.base_url == expected_url
     assert client._api_key == expected_key
+    # reasoning models go silent for minutes, but a dead host must fail fast
+    assert client.timeout == (10.0, 3600)
 
 
 @pytest.mark.parametrize(

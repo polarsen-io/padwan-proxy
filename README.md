@@ -22,6 +22,8 @@ ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=dummy claude
 - `--backend-url` — OpenAI-compatible endpoint (default: `$PADWAN_BASE_URL`).
 - `--api-key-env VAR` — env var holding the backend key (default: `PADWAN_API_KEY`, then `OPENAI_API_KEY`).
 - `--max-output-tokens` — cap on `max_tokens` forwarded to the backend (default 16384; Anthropic clients ask for more than many backends allow).
+- `--timeout` — backend read timeout in seconds (default 3600). It applies per gap in the stream, not to the whole request: reasoning models can stay silent for minutes before their first token. The connect timeout stays at 10s, so an unreachable backend still fails fast.
+- `--stream-retries` — replays of a stream that fails before any event reached the client (default 1). Nothing is replayed once the client has seen output, and permanent failures (4xx, rate limits, quota) are never retried.
 - `-v/--verbose` — log each proxied request (models, tokens, duration); `-vv/--timings` adds the timing split (backend wait, request-translation time, proxy overhead).
 - `--trace` — instrument proxied requests with padwan-llm's OTel GenAI telemetry (Langfuse when `LANGFUSE_PUBLIC_KEY` is set, OTLP otherwise; needs the `trace` extra).
 - `-p/--port` (4000), `--host` (127.0.0.1).

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import logging
+import asyncio
 import os
+import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
@@ -15,9 +16,12 @@ from padwan_llm.anthropic.events import (
     stream_to_anthropic,
 )
 from padwan_llm.client import PADWAN_API_KEY_ENV, PADWAN_BASE_URL_ENV, LLMClient
+from padwan_llm.errors import LLMError, QuotaExceededError, TooManyRequestsError
 from padwan_llm.openai.client import _OpenAIBase
 from piou import CommandError, Option
 
+from .env import DEFAULT_STREAM_RETRIES, DEFAULT_TIMEOUT, ENV_PREFIX
+from .logs import log, log_request, timing_detail
 from .utils import console
 
 if TYPE_CHECKING:
@@ -27,50 +31,32 @@ if TYPE_CHECKING:
 
 __all__ = ("build_router", "main", "proxy_command")
 
-log = logging.getLogger("padwan_proxy.proxy")
-
 SSE_HEADERS = [
     ("content-type", "text/event-stream"),
     ("cache-control", "no-cache, no-transform"),
     ("x-accel-buffering", "no"),
 ]
 
-# env round-trip between the CLI process and granian worker processes
-ENV_PREFIX = "PADWAN_PROXY_"
+_RETRY_BACKOFF = 0.5
+
+_CONNECT_TIMEOUT = 10.0
+
+_CLIENT_STATUS = re.compile(r"^\[[\w-]+\] (4\d\d)")
 
 
-def _log_request(
-    requested: str,
-    target: str,
-    *,
-    kind: str,
-    usage: dict[str, Any],
-    stop_reason: str | None,
-    elapsed: float,
-    timing: str = "",
-) -> None:
-    cached = usage.get("cache_read_input_tokens")
-    log.info(
-        "%s → %s | %s | %s | in=%s out=%s%s | %.2fs%s",
-        requested,
-        target,
-        kind,
-        stop_reason or "?",
-        usage.get("input_tokens", 0),
-        usage.get("output_tokens", 0),
-        f" cached={cached}" if cached else "",
-        elapsed,
-        timing,
-    )
+def _retryable_stream_error(e: Exception) -> bool:
+    """Whether a failed stream attempt could succeed if replayed.
 
-
-def _timing_detail(elapsed: float, backend: float, req_xlate: float) -> str:
-    """Format the -vv timing segment: backend wait vs time spent in the proxy."""
-    overhead = max(0.0, elapsed - backend - req_xlate)
-    return (
-        f" (backend {backend:.2f}s, req-xlate {req_xlate * 1e3:.1f}ms, "
-        f"proxy {overhead * 1e3:.1f}ms)"
-    )
+    Rate limits carry their own retry-after, quota and 4xx are permanent;
+    timeouts, connection resets and 5xx are worth another attempt.
+    """
+    match e:
+        case TooManyRequestsError() | QuotaExceededError():
+            return False
+        case LLMError():
+            return _CLIENT_STATUS.match(str(e)) is None
+        case _:
+            return True
 
 
 async def _timed_chunks(
@@ -88,8 +74,20 @@ async def _timed_chunks(
         yield chunk
 
 
+async def _mark_first_chunk(
+    chunks: AsyncIterator[Any], seen: list[bool]
+) -> AsyncIterator[Any]:
+    """Pass chunks through, setting seen[0] once the backend emitted its first."""
+    async for chunk in chunks:
+        seen[0] = True
+        yield chunk
+
+
 def _make_client(
-    backend_url: str | None, model: str, api_key_env: str | None
+    backend_url: str | None,
+    model: str,
+    api_key_env: str | None,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> _OpenAIBase:
     """Build the backend client, delegating env resolution to `LLMClient`.
 
@@ -112,7 +110,14 @@ def _make_client(
             f"[yellow]{PADWAN_API_KEY_ENV} not set; connecting to the backend "
             "unauthenticated (fine for local servers)[/yellow]"
         )
-    client = LLMClient(model=model, base_url=backend_url, api_key=api_key)
+    client = LLMClient(
+        model=model,
+        base_url=backend_url,
+        api_key=api_key,
+        # (connect, read) tuple: a read timeout long enough for a silent
+        # reasoning model must not also let a dead host hang that long.
+        timeout=cast(float, (_CONNECT_TIMEOUT, timeout)),
+    )
     if not isinstance(client, _OpenAIBase):
         raise CommandError(f"Backend for {model!r} is not OpenAI-compatible")
     return client
@@ -160,6 +165,7 @@ def build_router(
     small_model: str | None = None,
     vision_model: str | None = None,
     max_output_tokens: int = 16384,
+    stream_retries: int = DEFAULT_STREAM_RETRIES,
     timings: bool = False,
 ) -> Router:
     """Build the Anthropic-compatible RSGI router over an OpenAI-compatible client."""
@@ -173,42 +179,74 @@ def build_router(
         req_xlate: float,
     ) -> None:
         start = time.monotonic()
-        usage: dict[str, Any] = {}
-        stop_reason: str | None = None
         backend_wait = [0.0]
         # Without this OpenAI-compatible backends omit usage from the final chunk.
         request_body.setdefault("stream_options", {"include_usage": True})
         transport = proto.response_stream(200, SSE_HEADERS)
-        try:
-            chunks: AsyncIterator[Any] = client.stream(cast(Any, request_body))
-            if timings:
-                chunks = _timed_chunks(chunks, backend_wait)
-            events = stream_to_anthropic(chunks, model=requested_model)
-            async for name, payload in events:
-                if name == "message_delta":
-                    usage = payload.get("usage") or {}
-                    stop_reason = (payload.get("delta") or {}).get("stop_reason")
-                await transport.send_str(_sse(name, payload))
-        except Exception as e:  # error mid-stream: report in-band, Anthropic style
-            log.warning(
-                "%s → %s | stream failed after %.2fs: %s",
-                requested_model,
-                target_model,
-                time.monotonic() - start,
-                e,
-            )
-            _, body = error_to_anthropic(e)
-            await transport.send_str(_sse("error", body))
-            return
+        sent = False
+        attempt = 0
+        while True:
+            attempt_start = time.monotonic()
+            usage: dict[str, Any] = {}
+            stop_reason: str | None = None
+            first_chunk = [False]
+            try:
+                chunks: AsyncIterator[Any] = client.stream(cast(Any, request_body))
+                if timings:
+                    chunks = _timed_chunks(chunks, backend_wait)
+                events = stream_to_anthropic(
+                    _mark_first_chunk(chunks, first_chunk), model=requested_model
+                )
+                # message_start is emitted before any backend I/O; hold frames
+                # until the backend produced a chunk so a failed attempt stays
+                # un-sent — and therefore replayable.
+                held: list[str] = []
+                async for name, payload in events:
+                    if name == "message_delta":
+                        usage = payload.get("usage") or {}
+                        stop_reason = (payload.get("delta") or {}).get("stop_reason")
+                    if not first_chunk[0]:
+                        held.append(_sse(name, payload))
+                        continue
+                    sent = True
+                    for frame in held:
+                        await transport.send_str(frame)
+                    held.clear()
+                    await transport.send_str(_sse(name, payload))
+                for frame in held:  # backend closed without emitting any chunk
+                    await transport.send_str(frame)
+                break
+            except Exception as e:  # error mid-stream: report in-band, Anthropic style
+                if sent or attempt >= stream_retries or not _retryable_stream_error(e):
+                    log.warning(
+                        "%s → %s | stream failed after %.2fs: %s",
+                        requested_model,
+                        target_model,
+                        time.monotonic() - start,
+                        e,
+                    )
+                    _, body = error_to_anthropic(e)
+                    await transport.send_str(_sse("error", body))
+                    return
+                attempt += 1
+                log.warning(
+                    "%s → %s | stream attempt %d failed after %.2fs: %s — retrying",
+                    requested_model,
+                    target_model,
+                    attempt,
+                    time.monotonic() - attempt_start,
+                    e,
+                )
+                await asyncio.sleep(_RETRY_BACKOFF * 2 ** (attempt - 1))
         elapsed = time.monotonic() - start
-        _log_request(
+        log_request(
             requested_model,
             target_model,
             kind="stream",
             usage=usage,
             stop_reason=stop_reason,
             elapsed=elapsed,
-            timing=_timing_detail(elapsed + req_xlate, backend_wait[0], req_xlate)
+            timing=timing_detail(elapsed + req_xlate, backend_wait[0], req_xlate)
             if timings
             else "",
         )
@@ -251,14 +289,14 @@ def build_router(
         backend_s = time.monotonic() - start
         resp = response_to_anthropic(data, model=requested_model)
         elapsed = time.monotonic() - start + req_xlate
-        _log_request(
+        log_request(
             requested_model,
             target,
             kind="complete",
             usage=cast("dict[str, Any]", resp.get("usage") or {}),
             stop_reason=resp.get("stop_reason"),
             elapsed=elapsed,
-            timing=_timing_detail(elapsed, backend_s, req_xlate) if timings else "",
+            timing=timing_detail(elapsed, backend_s, req_xlate) if timings else "",
         )
         return Response(resp)
 
@@ -297,6 +335,17 @@ def proxy_command(
     max_output_tokens: int = Option(
         16384, "--max-output-tokens", help="Cap on max_tokens forwarded to the backend"
     ),
+    timeout: float = Option(
+        DEFAULT_TIMEOUT,
+        "--timeout",
+        help="Backend read timeout in seconds, applied per stream gap "
+        "(reasoning models can stay silent for minutes)",
+    ),
+    stream_retries: int = Option(
+        DEFAULT_STREAM_RETRIES,
+        "--stream-retries",
+        help="Replays of a stream that fails before any event reaches the client",
+    ),
     host: str = Option("127.0.0.1", "--host", help="Bind address"),
     port: int = Option(4000, "-p", "--port", help="Port to listen on"),
     trace: bool = Option(
@@ -332,6 +381,8 @@ def proxy_command(
         "VISION_MODEL": vision_model,
         "API_KEY_ENV": api_key_env,
         "MAX_OUTPUT_TOKENS": str(max_output_tokens),
+        "TIMEOUT": str(timeout),
+        "STREAM_RETRIES": str(stream_retries),
         "TRACE": "1" if trace else "",
         "VERBOSE": "1" if (verbose or timings) else "",
         "TIMINGS": "1" if timings else "",
