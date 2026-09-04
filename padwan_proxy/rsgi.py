@@ -32,6 +32,7 @@ app = App(
         max_output_tokens=env.MAX_OUTPUT_TOKENS,
         stream_retries=env.STREAM_RETRIES,
         timings=env.TIMINGS,
+        breakdown=env.BREAKDOWN,
     ),
     on_startup=[_startup],
     on_shutdown=[_shutdown],

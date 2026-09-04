@@ -3,6 +3,9 @@ from typing import Any
 
 log = logging.getLogger("padwan_proxy")
 
+# aligns the breakdown line under the message, past the "%H:%M:%S " stamp
+_INDENT = " " * 9
+
 
 def setup_logging() -> None:
     """Configure per-request logging for `-v`/`-vv`."""
@@ -20,10 +23,11 @@ def log_request(
     stop_reason: str | None,
     elapsed: float,
     timing: str = "",
+    breakdown: str = "",
 ) -> None:
     cached = usage.get("cache_read_input_tokens")
     log.info(
-        "%s → %s | %s | %s | in=%s out=%s%s | %.2fs%s",
+        "%s → %s | %s | %s | in=%s out=%s%s | %.2fs%s%s",
         requested,
         target,
         kind,
@@ -33,6 +37,7 @@ def log_request(
         f" cached={cached}" if cached else "",
         elapsed,
         timing,
+        f"\n{_INDENT}{breakdown}" if breakdown else "",
     )
 
 

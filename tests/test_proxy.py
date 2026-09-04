@@ -137,8 +137,11 @@ async def _serve(app: Starlette) -> tuple[uvicorn.Server, asyncio.Task, int]:
 
 
 @pytest.fixture
-async def proxy():
-    """(FakeBackend, proxy Router) with the fake backend running and client open."""
+async def proxy(request):
+    """(FakeBackend, proxy Router) with the fake backend running and client open.
+
+    An indirect param overrides `build_router` kwargs.
+    """
     backend = FakeBackend()
     backend_server, backend_task, backend_port = await _serve(backend.app())
     client = OpenAIClient(
@@ -155,6 +158,7 @@ async def proxy():
             small_model="glm-small",
             vision_model="pixtral-test",
             timings=True,
+            **getattr(request, "param", {}),
         )
         yield backend, router
     backend_server.should_exit = True
@@ -453,6 +457,25 @@ async def test_requests_logged(proxy, caplog, body_extra, expected_kind):
     assert re.search(
         r"\(backend \d+\.\d+s, req-xlate \d+\.\dms, proxy \d+\.\dms\)", message
     )
+
+
+@pytest.mark.parametrize("proxy", [{"breakdown": True}], indirect=True)
+async def test_breakdown_logged(proxy, caplog):
+    _, router = proxy
+    body = _messages_body(
+        system="you are a helpful assistant",
+        tools=[
+            {"name": "mcp__argent__describe", "input_schema": {"type": "object"}},
+            {"name": "Read", "input_schema": {"type": "object"}},
+        ],
+    )
+    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
+        await post(router, "/v1/messages", body)
+    (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
+    first, second = record.getMessage().splitlines()
+    assert "in=10 out=2" in first
+    assert re.match(r" +sys=\d+ tools=\d+\(2\) msgs=\d+ \| top: ", second)
+    assert "argent" in second and "builtin" in second
 
 
 async def test_backend_error_logged_as_warning(proxy, caplog):

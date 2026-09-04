@@ -20,6 +20,7 @@ from padwan_llm.errors import LLMError, QuotaExceededError, TooManyRequestsError
 from padwan_llm.openai.client import _OpenAIBase
 from piou import CommandError, Option
 
+from .breakdown import format_breakdown, prompt_breakdown
 from .env import DEFAULT_STREAM_RETRIES, DEFAULT_TIMEOUT, ENV_PREFIX
 from .logs import log, log_request, timing_detail
 from .utils import console
@@ -167,6 +168,7 @@ def build_router(
     max_output_tokens: int = 16384,
     stream_retries: int = DEFAULT_STREAM_RETRIES,
     timings: bool = False,
+    breakdown: bool = False,
 ) -> Router:
     """Build the Anthropic-compatible RSGI router over an OpenAI-compatible client."""
     router = Router()
@@ -177,6 +179,7 @@ def build_router(
         requested_model: str,
         target_model: str,
         req_xlate: float,
+        detail: str,
     ) -> None:
         start = time.monotonic()
         backend_wait = [0.0]
@@ -249,6 +252,7 @@ def build_router(
             timing=timing_detail(elapsed + req_xlate, backend_wait[0], req_xlate)
             if timings
             else "",
+            breakdown=detail,
         )
 
     @router.post("/v1/messages")
@@ -264,6 +268,7 @@ def build_router(
         xlate_start = time.perf_counter()
         openai_body = messages_to_openai(body, model=target)
         req_xlate = time.perf_counter() - xlate_start
+        detail = format_breakdown(prompt_breakdown(body)) if breakdown else ""
         if body.get("stream"):
             await _stream(
                 proto,
@@ -271,6 +276,7 @@ def build_router(
                 requested_model,
                 target,
                 req_xlate,
+                detail,
             )
             return None
         start = time.monotonic()
@@ -297,6 +303,7 @@ def build_router(
             stop_reason=resp.get("stop_reason"),
             elapsed=elapsed,
             timing=timing_detail(elapsed, backend_s, req_xlate) if timings else "",
+            breakdown=detail,
         )
         return Response(resp)
 
@@ -357,6 +364,12 @@ def proxy_command(
         "--verbose",
         help="Log each proxied request (models, tokens, duration)",
     ),
+    breakdown: bool = Option(
+        False,
+        "--breakdown",
+        help="Like -v, plus a per-request prompt split: system, tool schemas "
+        "(grouped by MCP server), and message history",
+    ),
     timings: bool = Option(
         False,
         "-vv",
@@ -384,8 +397,9 @@ def proxy_command(
         "TIMEOUT": str(timeout),
         "STREAM_RETRIES": str(stream_retries),
         "TRACE": "1" if trace else "",
-        "VERBOSE": "1" if (verbose or timings) else "",
+        "VERBOSE": "1" if (verbose or timings or breakdown) else "",
         "TIMINGS": "1" if timings else "",
+        "BREAKDOWN": "1" if breakdown else "",
     }
     for key, value in env.items():
         if value:

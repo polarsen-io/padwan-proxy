@@ -1,0 +1,14 @@
+name: Nightly
+
+# Forward-compat warning for the next Python, not a release gate.
+# Once 3.15 ships, move it back into ci.yml's matrix and drop this workflow.
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+    with:
+      python-version: "3.15"
