@@ -26,10 +26,6 @@ trace = [
 [project.scripts]
 padwan-proxy = "padwan_proxy:main"
 
-# until gravier is published on PyPI; `just gravier-local` to hack on it in place
-[tool.uv.sources]
-gravier = { git = "https://github.com/Andarius/gravier", rev = "7d86ec8757fae2d412066cd972bee2448235926a" }
-
 [build-system]
 requires = ["uv_build>=0.9.18,<0.10.0"]
 build-backend = "uv_build"

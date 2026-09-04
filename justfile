@@ -45,15 +45,10 @@ build tag='padwan-proxy:latest':
 gravier-local path='../../gravier':
     uv add --editable {{ path }}
 
-# Point gravier back at upstream, pinned (defaults to current master)
+# Point gravier back at the released PyPI package
 [group('dev')]
-gravier-git rev='':
-    #!/usr/bin/env bash
-    set -euo pipefail
-    url=https://github.com/Andarius/gravier
-    rev='{{ rev }}'
-    [ -n "$rev" ] || rev=$(git ls-remote "$url" master | cut -f1)
-    uv add "gravier @ git+$url@$rev"
+gravier-pypi:
+    uv remove gravier && uv add gravier
 
 # Bump version (commitizen — updates pyproject.toml and CHANGELOG)
 [group('release')]

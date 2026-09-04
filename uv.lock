@@ -394,10 +394,14 @@ wheels = [
 [[package]]
 name = "gravier"
 version = "0.1.0"
-source = { git = "https://github.com/Andarius/gravier?rev=7d86ec8757fae2d412066cd972bee2448235926a#7d86ec8757fae2d412066cd972bee2448235926a" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "granian" },
     { name = "msgspec" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e4/b8/caf67ecfdce96242e1af865ea500e8ddad08d06becc6160e5668756de68d/gravier-0.1.0.tar.gz", hash = "sha256:180958d5962bcf2544be4ba86d3dbefe1ca29fa8bceb5158dd7605b7a075a8f1", size = 11832, upload-time = "2026-09-04T21:46:19.385Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/62/856b141abf19985061a5ced485bd9cd78c9f0e6a29e3a4a2f438ece43e4e/gravier-0.1.0-py3-none-any.whl", hash = "sha256:5458a888cf1f8464e9bb2c3252c03742302b9e6abdeb197aff9d596e3fed9196", size = 14497, upload-time = "2026-09-04T21:46:18.492Z" },
 ]
 
 [[package]]
@@ -919,7 +923,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gravier", git = "https://github.com/Andarius/gravier?rev=7d86ec8757fae2d412066cd972bee2448235926a" },
+    { name = "gravier", specifier = ">=0.1.0" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "orjson", specifier = ">=3.11" },

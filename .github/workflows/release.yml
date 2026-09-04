@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -39,6 +40,12 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+
+      - name: Build package
+        run: uv build
+
       - name: Save PR body as release notes
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
@@ -63,9 +70,11 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.version }}
           body_path: RELEASE_NOTES.md
+          files: dist/*
 
-  # No PyPI step: gravier is a git dependency and PyPI rejects direct URLs.
-  # Add `uv publish` here once gravier ships to PyPI.
+      - name: Publish to PyPI
+        run: uv publish
+
   image:
     needs: release
     permissions:
