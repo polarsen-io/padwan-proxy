@@ -1,5 +1,10 @@
 # Padwan Proxy
 
+[![CI](https://github.com/polarsen-io/padwan-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/polarsen-io/padwan-proxy/actions/workflows/ci.yml)
+[![Docker](https://github.com/polarsen-io/padwan-proxy/actions/workflows/docker.yml/badge.svg)](https://github.com/polarsen-io/padwan-proxy/actions/workflows/docker.yml)
+[![Release](https://img.shields.io/github/v/release/polarsen-io/padwan-proxy)](https://github.com/polarsen-io/padwan-proxy/releases)
+[![ghcr.io](https://img.shields.io/badge/ghcr.io-padwan--proxy-2496ED?logo=docker&logoColor=white)](https://github.com/polarsen-io/padwan-proxy/pkgs/container/padwan-proxy)
+
 Serve the Anthropic Messages API (`/v1/messages` + `count_tokens`) on top of any OpenAI-compatible backend, so Anthropic clients (e.g. Claude Code) can use it. Built on [`padwan-llm`](https://github.com/polarsen-io/padwan-llm)'s Anthropic↔OpenAI translation layer, served by [granian](https://github.com/emmett-framework/granian) (RSGI) via [gravier](https://github.com/Andarius/gravier).
 
 ```bash
@@ -10,6 +15,19 @@ uvx padwan-proxy --backend-url https://api.example.com/v1/ \
 # then point the client at it
 ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=dummy claude
 ```
+
+## Docker
+
+Images are published to GHCR on every release, plus `edge` on each push to master.
+
+```bash
+docker run --rm -p 4000:4000 -e PADWAN_API_KEY=... \
+  ghcr.io/polarsen-io/padwan-proxy:latest \
+  --backend-url https://api.example.com/v1/ -m my-model
+```
+
+The entrypoint already binds `0.0.0.0`; everything after the image name is passed
+straight to `padwan-proxy`.
 
 ## Routing
 
