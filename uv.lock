@@ -394,27 +394,10 @@ wheels = [
 [[package]]
 name = "gravier"
 version = "0.1.0"
-source = { editable = "../../gravier" }
+source = { git = "https://github.com/Andarius/gravier?rev=7d86ec8757fae2d412066cd972bee2448235926a#7d86ec8757fae2d412066cd972bee2448235926a" }
 dependencies = [
     { name = "granian" },
     { name = "msgspec" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "granian", specifier = ">=2.2.3" },
-    { name = "msgspec", specifier = ">=0.19.0" },
-]
-
-[package.metadata.requires-dev]
-bump = [{ name = "commitizen", specifier = ">=4.0.0" }]
-dev = [
-    { name = "niquests", specifier = ">=3.21.0" },
-    { name = "pyright", specifier = ">=1.1.400" },
-    { name = "pytest", specifier = ">=8.0.0" },
-    { name = "pytest-asyncio", specifier = ">=1.0.0" },
-    { name = "pytest-cov", specifier = ">=6.0.0" },
-    { name = "ruff", specifier = ">=0.11.0" },
 ]
 
 [[package]]
@@ -936,7 +919,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gravier", editable = "../../gravier" },
+    { name = "gravier", git = "https://github.com/Andarius/gravier?rev=7d86ec8757fae2d412066cd972bee2448235926a" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "orjson", specifier = ">=3.11" },
