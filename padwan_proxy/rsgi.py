@@ -6,9 +6,7 @@ from . import env
 from .logs import setup_logging
 from .proxy import _make_client, build_router
 
-_client = _make_client(
-    env.BACKEND_URL, env.MODEL, env.API_KEY_ENV, timeout=env.TIMEOUT
-)
+_client = _make_client(env.BACKEND_URL, env.MODEL, env.API_KEY_ENV, timeout=env.TIMEOUT)
 
 
 async def _startup() -> None:
