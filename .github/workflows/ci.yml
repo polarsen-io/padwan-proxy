@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+    tags-ignore:
+      - '**'
+  pull_request:
+
+jobs:
+  tests:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.14", "3.15"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # gravier is a local editable dependency (../../gravier) until published
+      - name: Clone gravier
+        run: git clone --depth 1 https://github.com/Andarius/gravier ../../gravier
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Lint
+        run: uv run ruff check padwan_proxy/ tests/
+
+      - name: Check format
+        run: uv run ruff format --check padwan_proxy/ tests/
+
+      - name: Type check
+        run: uv run pyright padwan_proxy/
+        env:
+          PYRIGHT_PYTHON_GLOBAL_NODE: true
+
+      - name: Run tests
+        run: uv run pytest -vv --cov=padwan_proxy --cov-report=term-missing

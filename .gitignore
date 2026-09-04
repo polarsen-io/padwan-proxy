@@ -5,3 +5,6 @@ dist/
 .ruff_cache/
 .scratch/
 .coverage
+.idea/
+.scratch*/
+.claude/

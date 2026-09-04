@@ -34,6 +34,11 @@ fix:
 [group('dev')]
 ci: lint check test
 
+# Build the docker image
+[group('docker')]
+build tag='padwan-proxy:latest':
+    docker buildx build -t {{ tag }} .
+
 # Bump version (commitizen — updates pyproject.toml and CHANGELOG)
 [group('release')]
 bump *args:
