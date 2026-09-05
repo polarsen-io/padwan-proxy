@@ -381,6 +381,11 @@ def proxy_command(
     trace: bool = Option(
         False, "--trace", help="Instrument proxied requests (Langfuse or OTLP export)"
     ),
+    trace_content: bool = Option(
+        False,
+        "--trace-content",
+        help="Like --trace, plus prompts and completions recorded on the spans",
+    ),
     verbose: bool = Option(
         False,
         "-v",
@@ -419,7 +424,8 @@ def proxy_command(
         "MAX_OUTPUT_TOKENS": str(max_output_tokens),
         "TIMEOUT": str(timeout),
         "STREAM_RETRIES": str(stream_retries),
-        "TRACE": "1" if trace else "",
+        "TRACE": "1" if (trace or trace_content) else "",
+        "TRACE_CONTENT": "1" if trace_content else "",
         "VERBOSE": "1" if (verbose or timings or breakdown) else "",
         "TIMINGS": "1" if timings else "",
         "BREAKDOWN": "1" if breakdown else "",

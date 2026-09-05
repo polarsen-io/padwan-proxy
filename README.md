@@ -45,6 +45,7 @@ straight to `padwan-proxy`.
 - `-v/--verbose` — log each proxied request (models, tokens, duration); `-vv/--timings` adds the timing split (backend wait, request-translation time, proxy overhead).
 - `--breakdown` — like `-v`, plus a second line splitting the prompt into system, tool schemas (grouped by MCP server, heaviest first) and message history, so you can see what is filling the context.
 - `--trace` — instrument proxied requests with padwan-llm's OTel GenAI telemetry (Langfuse when `LANGFUSE_PUBLIC_KEY` is set, OTLP otherwise; needs the `trace` extra). With Langfuse, requests carrying a Claude Code session id in `metadata.user_id` are grouped into one Langfuse session.
+- `--trace-content` — like `--trace`, plus prompts and completions recorded on the spans (a Claude Code turn ships its whole context: system prompt, tool schemas, history).
 - `-p/--port` (4000), `--host` (127.0.0.1).
 
 ## Development

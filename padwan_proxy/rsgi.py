@@ -15,7 +15,7 @@ async def _startup() -> None:
     if env.TRACE:
         from .trace import enable_tracing
 
-        enable_tracing()
+        enable_tracing(capture_content=env.TRACE_CONTENT)
     await _client.__aenter__()
 
 

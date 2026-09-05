@@ -12,11 +12,11 @@ __all__ = ("enable_tracing", "session_context")
 _langfuse_active = False
 
 
-def _enable_langfuse() -> None:
+def _enable_langfuse(*, capture_content: bool) -> None:
     global _langfuse_active
     from padwan_llm.langfuse import instrument
 
-    integration = instrument()
+    integration = instrument(capture_content=capture_content)
     atexit.register(integration.shutdown)
     _langfuse_active = True
     console.print("[dim]Tracing enabled (Langfuse)[/dim]")
@@ -31,7 +31,7 @@ def session_context(session_id: str | None) -> AbstractContextManager[Any]:
     return propagate_attributes(session_id=session_id)
 
 
-def _enable_otlp() -> None:
+def _enable_otlp(*, capture_content: bool) -> None:
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
         OTLPMetricExporter,
     )
@@ -50,25 +50,30 @@ def _enable_otlp() -> None:
         resource=resource,
         metric_readers=[PeriodicExportingMetricReader(OTLPMetricExporter())],
     )
-    otel.instrument(tracer_provider=tracer_provider, meter_provider=meter_provider)
+    otel.instrument(
+        tracer_provider=tracer_provider,
+        meter_provider=meter_provider,
+        capture_content=capture_content,
+    )
     atexit.register(meter_provider.shutdown)
     atexit.register(tracer_provider.shutdown)
     endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
     console.print(f"[dim]Tracing enabled (OTLP → {endpoint})[/dim]")
 
 
-def enable_tracing() -> None:
+def enable_tracing(*, capture_content: bool = False) -> None:
     """Instrument padwan-llm clients for this process.
 
     Exports to Langfuse when `LANGFUSE_PUBLIC_KEY` is set (the adapter reads
     the standard `LANGFUSE_*` env vars), otherwise over OTLP using the
     standard `OTEL_EXPORTER_OTLP_*` env vars. Exporters are flushed at exit.
+    `capture_content` also records prompts and completions on the spans.
     """
     try:
         if os.environ.get("LANGFUSE_PUBLIC_KEY"):
-            _enable_langfuse()
+            _enable_langfuse(capture_content=capture_content)
         else:
-            _enable_otlp()
+            _enable_otlp(capture_content=capture_content)
     except ImportError:
         console.print("[red]Tracing dependencies not installed.[/red]")
         console.print("[dim]Install the trace extra: `uv sync --extra trace`.[/dim]")
