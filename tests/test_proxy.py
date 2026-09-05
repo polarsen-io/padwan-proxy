@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+from contextlib import contextmanager
 from typing import Any, cast
 
 import pytest
@@ -14,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from padwan_proxy.proxy import _make_client, build_router
+from padwan_proxy.proxy import _client_session, _make_client, build_router
 
 TEXT_CHUNKS = [
     {"choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hel"}}]},
@@ -195,6 +196,66 @@ def _parse_sse(proto: FakeProto) -> list[tuple[str, dict[str, Any]]]:
                 data = json.loads(line.removeprefix("data: "))
         events.append((name, data))
     return events
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        pytest.param(
+            {
+                "user_id": json.dumps(
+                    {
+                        "device_id": "d",
+                        "account_uuid": "",
+                        "session_id": "a7cade63-3dc7-4cf6-b926-981d7b3df7c7",
+                    }
+                )
+            },
+            "a7cade63-3dc7-4cf6-b926-981d7b3df7c7",
+            id="json",
+        ),
+        pytest.param(
+            {
+                "user_id": "user_abc_account_123"
+                "_session_a7cade63-3dc7-4cf6-b926-981d7b3df7c7"
+            },
+            "a7cade63-3dc7-4cf6-b926-981d7b3df7c7",
+            id="legacy",
+        ),
+        pytest.param({"user_id": json.dumps({"session_id": ""})}, None, id="empty"),
+        pytest.param({"user_id": "{not json"}, None, id="malformed"),
+        pytest.param({"user_id": "opaque-user"}, None, id="opaque"),
+        pytest.param(None, None, id="absent"),
+    ],
+)
+def test_client_session(metadata, expected):
+    body = _messages_body()
+    if metadata is not None:
+        body["metadata"] = metadata
+    assert _client_session(body) == expected
+
+
+@pytest.mark.parametrize(
+    "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
+)
+async def test_session_propagated_to_tracing(proxy, monkeypatch, stream):
+    backend, router = proxy
+    seen: list[str | None] = []
+
+    @contextmanager
+    def fake_session_context(session_id):
+        seen.append(session_id)
+        yield
+
+    monkeypatch.setattr("padwan_proxy.proxy.session_context", fake_session_context)
+    body = _messages_body(
+        stream=stream, metadata={"user_id": json.dumps({"session_id": "sess-1"})}
+    )
+
+    proto = await post(router, "/v1/messages", body)
+
+    assert proto.status == 200
+    assert seen == ["sess-1"]
 
 
 async def test_messages_non_stream(proxy):

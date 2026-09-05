@@ -2,18 +2,33 @@ from __future__ import annotations
 
 import atexit
 import os
+from contextlib import AbstractContextManager, nullcontext
+from typing import Any
 
 from .utils import console
 
-__all__ = ("enable_tracing",)
+__all__ = ("enable_tracing", "session_context")
+
+_langfuse_active = False
 
 
 def _enable_langfuse() -> None:
+    global _langfuse_active
     from padwan_llm.langfuse import instrument
 
     integration = instrument()
     atexit.register(integration.shutdown)
+    _langfuse_active = True
     console.print("[dim]Tracing enabled (Langfuse)[/dim]")
+
+
+def session_context(session_id: str | None) -> AbstractContextManager[Any]:
+    """Group the spans opened inside under one Langfuse session; a no-op otherwise."""
+    if session_id is None or not _langfuse_active:
+        return nullcontext()
+    from langfuse import propagate_attributes
+
+    return propagate_attributes(session_id=session_id)
 
 
 def _enable_otlp() -> None:

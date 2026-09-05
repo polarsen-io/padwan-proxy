@@ -1,6 +1,29 @@
+from contextlib import nullcontext
+
 import pytest
 
 import padwan_proxy.trace as trace
+
+
+class TestSessionContext:
+    @pytest.mark.parametrize(
+        ("langfuse_active", "session_id", "propagates"),
+        [
+            pytest.param(True, "sess-1", True, id="langfuse+session"),
+            pytest.param(True, None, False, id="langfuse-no-session"),
+            pytest.param(False, "sess-1", False, id="otlp"),
+        ],
+    )
+    def test_propagates_only_with_langfuse_and_session(
+        self, monkeypatch, langfuse_active: bool, session_id: str | None, propagates
+    ):
+        monkeypatch.setattr(trace, "_langfuse_active", langfuse_active)
+
+        ctx = trace.session_context(session_id)
+
+        assert isinstance(ctx, nullcontext) is not propagates
+        with ctx:
+            pass
 
 
 class TestEnableTracing:
