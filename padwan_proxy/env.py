@@ -18,6 +18,7 @@ STREAM_RETRIES = int(
     os.environ.get(ENV_PREFIX + "STREAM_RETRIES", str(DEFAULT_STREAM_RETRIES))
 )
 TRACE = bool(os.environ.get(ENV_PREFIX + "TRACE"))
+TRACE_CONTENT = bool(os.environ.get(ENV_PREFIX + "TRACE_CONTENT"))
 VERBOSE = bool(os.environ.get(ENV_PREFIX + "VERBOSE"))
 TIMINGS = bool(os.environ.get(ENV_PREFIX + "TIMINGS"))
 BREAKDOWN = bool(os.environ.get(ENV_PREFIX + "BREAKDOWN"))

@@ -23,6 +23,7 @@ from piou import CommandError, Option
 from .breakdown import format_breakdown, prompt_breakdown
 from .env import DEFAULT_STREAM_RETRIES, DEFAULT_TIMEOUT, ENV_PREFIX
 from .logs import log, log_request, timing_detail
+from .trace import session_context
 from .utils import console
 
 if TYPE_CHECKING:
@@ -155,6 +156,25 @@ def _has_images(messages: list[Any]) -> bool:
     return False
 
 
+_SESSION_RE = re.compile(r"session_([0-9a-fA-F-]{36})")
+
+
+def _client_session(body: dict[str, Any]) -> str | None:
+    """Claude Code's session id from `metadata.user_id` (JSON or `…_session_<uuid>`)."""
+    user_id = (body.get("metadata") or {}).get("user_id")
+    if not isinstance(user_id, str):
+        return None
+    if user_id.startswith("{"):
+        try:
+            parsed = _json_loads(user_id)
+        except ValueError:
+            return None
+        session = parsed.get("session_id") if isinstance(parsed, dict) else None
+        return session if isinstance(session, str) and session else None
+    match = _SESSION_RE.search(user_id)
+    return match[1] if match else None
+
+
 def _sse(name: str, payload: dict[str, Any]) -> str:
     return f"event: {name}\ndata: {_json_dumps(payload)}\n\n"
 
@@ -269,19 +289,22 @@ def build_router(
         openai_body = messages_to_openai(body, model=target)
         req_xlate = time.perf_counter() - xlate_start
         detail = format_breakdown(prompt_breakdown(body)) if breakdown else ""
+        session = _client_session(cast("dict[str, Any]", body))
         if body.get("stream"):
-            await _stream(
-                proto,
-                cast("dict[str, Any]", openai_body),
-                requested_model,
-                target,
-                req_xlate,
-                detail,
-            )
+            with session_context(session):
+                await _stream(
+                    proto,
+                    cast("dict[str, Any]", openai_body),
+                    requested_model,
+                    target,
+                    req_xlate,
+                    detail,
+                )
             return None
         start = time.monotonic()
         try:
-            data, _ = await client.complete(openai_body)
+            with session_context(session):
+                data, _ = await client.complete(openai_body)
         except Exception as e:
             log.warning(
                 "%s → %s | request failed after %.2fs: %s",
@@ -358,6 +381,11 @@ def proxy_command(
     trace: bool = Option(
         False, "--trace", help="Instrument proxied requests (Langfuse or OTLP export)"
     ),
+    trace_content: bool = Option(
+        False,
+        "--trace-content",
+        help="Like --trace, plus prompts and completions recorded on the spans",
+    ),
     verbose: bool = Option(
         False,
         "-v",
@@ -396,7 +424,8 @@ def proxy_command(
         "MAX_OUTPUT_TOKENS": str(max_output_tokens),
         "TIMEOUT": str(timeout),
         "STREAM_RETRIES": str(stream_retries),
-        "TRACE": "1" if trace else "",
+        "TRACE": "1" if (trace or trace_content) else "",
+        "TRACE_CONTENT": "1" if trace_content else "",
         "VERBOSE": "1" if (verbose or timings or breakdown) else "",
         "TIMINGS": "1" if timings else "",
         "BREAKDOWN": "1" if breakdown else "",
