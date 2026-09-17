@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import pytest
 import uvicorn
+from granian._granian import RSGIProtocolClosed
 from gravier.testing import FakeProto, FakeScope
 from padwan_llm.openai.client import OpenAIClient
 from piou import CommandError
@@ -401,6 +402,43 @@ async def test_stream_not_replayed_once_events_reached_the_client(proxy, no_back
     assert backend.calls == 1
 
 
+class _DisconnectTransport:
+    """RSGI transport that closes after N sends — simulates a client drop."""
+
+    def __init__(self, after: int) -> None:
+        self._after = after
+        self._sent = 0
+
+    async def send_str(self, data: str) -> None:
+        self._sent += 1
+        if self._sent > self._after:
+            raise RSGIProtocolClosed("RSGI transport is closed")
+
+
+async def test_disconnect_before_first_chunk_does_not_replay_backend(proxy, caplog):
+    backend, router = proxy
+    # zero chunks: first_chunk never flips, so a send drops the held frames with
+    # sent=False — the path that, without the inner re-raise, would replay the backend.
+    backend.stream_chunks = []
+    body = _messages_body(stream=True)
+
+    class _DroppingProto(FakeProto):
+        def response_stream(self, status, headers):  # type: ignore[override]
+            self.status = status
+            self.headers = headers
+            self.stream = _DisconnectTransport(after=0)  # type: ignore[assignment]
+            return self.stream
+
+    proto = _DroppingProto(json.dumps(body).encode())
+    scope = FakeScope(method="POST", path="/v1/messages")
+    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
+        await router.dispatch(scope, proto)  # type: ignore[arg-type]
+    # client already gone: no retry, no in-band error, single backend call
+    assert backend.calls == 1
+    assert not any("retrying" in r.message for r in caplog.records)
+    assert any("client disconnected" in r.message for r in caplog.records)
+
+
 IMAGE_BLOCK = {
     "type": "image",
     "source": {"type": "base64", "media_type": "image/png", "data": "aWNv"},
@@ -456,6 +494,12 @@ IMAGE_BLOCK = {
             [{"role": "user", "content": [{"type": "text", "text": "no image"}]}],
             "glm-4.6",
             id="no_image_keeps_main_model",
+        ),
+        pytest.param(
+            "glm-small",
+            [{"role": "user", "content": "no image"}],
+            "glm-small",
+            id="backend_name_passes_through",
         ),
     ],
 )

@@ -6,7 +6,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Any, cast
 
-from granian._granian import RSGIHTTPProtocol
+from granian._granian import RSGIHTTPProtocol, RSGIProtocolClosed
 from gravier import AddressInUseError, Response, Router, RSGIScope, serve
 from padwan_llm._json import dumps as _json_dumps, loads as _json_loads
 from padwan_llm.anthropic.compat import messages_to_openai
@@ -201,6 +201,22 @@ def build_router(
         req_xlate: float,
         detail: str,
     ) -> None:
+        # Client disconnect mid-stream closes the transport; expected, not a fault.
+        try:
+            await _stream_body(
+                proto, request_body, requested_model, target_model, req_xlate, detail
+            )
+        except RSGIProtocolClosed:
+            log.info("%s → %s | client disconnected", requested_model, target_model)
+
+    async def _stream_body(
+        proto: RSGIHTTPProtocol,
+        request_body: dict[str, Any],
+        requested_model: str,
+        target_model: str,
+        req_xlate: float,
+        detail: str,
+    ) -> None:
         start = time.monotonic()
         backend_wait = [0.0]
         # Without this OpenAI-compatible backends omit usage from the final chunk.
@@ -239,6 +255,8 @@ def build_router(
                 for frame in held:  # backend closed without emitting any chunk
                     await transport.send_str(frame)
                 break
+            except RSGIProtocolClosed:  # client gone: don't retry, don't report in-band
+                raise
             except Exception as e:  # error mid-stream: report in-band, Anthropic style
                 if sent or attempt >= stream_retries or not _retryable_stream_error(e):
                     log.warning(
