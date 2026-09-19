@@ -1,17 +1,53 @@
 import logging
 from typing import Any
 
+from .utils import console
+
 log = logging.getLogger("padwan_proxy")
 
 # aligns the breakdown line under the message, past the "%H:%M:%S " stamp
 _INDENT = " " * 9
 
+_STOP_STYLE = {"end_turn": "green", "tool_use": "blue", "max_tokens": "yellow"}
 
-def setup_logging() -> None:
-    """Configure per-request logging for `-v`/`-vv`."""
+_rich = False
+
+
+def setup_logging(*, rich: bool = False) -> None:
+    """Configure per-request logging for `-v`/`-vv`, optionally rich-rendered."""
+    global _rich
+    _rich = rich
+    if not rich:
+        logging.basicConfig(
+            level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
+        )
+        return
+    from rich.logging import RichHandler
+
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
+        level=logging.INFO,
+        format="%(message)s",
+        datefmt="[%H:%M:%S]",
+        handlers=[
+            RichHandler(
+                console=console,
+                markup=True,
+                show_path=False,
+                show_level=True,
+                omit_repeated_times=False,
+            )
+        ],
     )
+
+
+def _style(text: object, style: str) -> str:
+    """Rich markup when rich logging is on, plain text otherwise."""
+    return f"[{style}]{text}[/{style}]" if _rich else str(text)
+
+
+def route(requested: str, target: str) -> str:
+    """`requested → target`, collapsed when the client asks for the backend name."""
+    return target if requested == target else f"{requested} → {target}"
 
 
 def log_request(
@@ -27,17 +63,16 @@ def log_request(
 ) -> None:
     cached = usage.get("cache_read_input_tokens")
     log.info(
-        "%s → %s | %s | %s | in=%s out=%s%s | %.2fs%s%s",
-        requested,
-        target,
-        kind,
-        stop_reason or "?",
+        "%s | %s | %s | in=%s out=%s%s | %s%s%s",
+        _style(route(requested, target), "bold cyan"),
+        _style(kind, "dim"),
+        _style(stop_reason or "?", _STOP_STYLE.get(stop_reason or "", "yellow")),
         usage.get("input_tokens", 0),
         usage.get("output_tokens", 0),
         f" cached={cached}" if cached else "",
-        elapsed,
-        timing,
-        f"\n{_INDENT}{breakdown}" if breakdown else "",
+        _style(f"{elapsed:.2f}s", "magenta"),
+        _style(timing, "dim") if timing else "",
+        f"\n{'' if _rich else _INDENT}{_style(breakdown, 'dim')}" if breakdown else "",
     )
 
 

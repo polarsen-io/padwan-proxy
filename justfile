@@ -9,6 +9,11 @@ default:
 test *args:
     uv run pytest {{ args }}
 
+# Run live reasoning tests with keys loaded from an env file
+[group('dev')]
+e2e env=".env" *args:
+    uv run --env-file {{ env }} pytest tests/e2e/ -m e2e {{ args }}
+
 # Type check
 [group('dev')]
 check:

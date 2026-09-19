@@ -11,7 +11,7 @@ _client = _make_client(env.BACKEND_URL, env.MODEL, env.API_KEY_ENV, timeout=env.
 
 async def _startup() -> None:
     if env.VERBOSE:
-        setup_logging()
+        setup_logging(rich=env.RICH)
     if env.TRACE:
         from .trace import enable_tracing
 

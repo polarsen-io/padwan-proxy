@@ -4,8 +4,11 @@ import asyncio
 import os
 import re
 import time
+from http import HTTPStatus
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import msgspec
 from granian._granian import RSGIHTTPProtocol, RSGIProtocolClosed
 from gravier import AddressInUseError, Response, Router, RSGIScope, serve
 from padwan_llm._json import dumps as _json_dumps, loads as _json_loads
@@ -15,21 +18,24 @@ from padwan_llm.anthropic.events import (
     response_to_anthropic,
     stream_to_anthropic,
 )
-from padwan_llm.client import PADWAN_API_KEY_ENV, PADWAN_BASE_URL_ENV, LLMClient
+from padwan_llm.anthropic.models import AnthropicCompatBody
+from padwan_llm.client import PADWAN_API_KEY_ENV, PADWAN_BASE_URL_ENV
 from padwan_llm.errors import LLMError, QuotaExceededError, TooManyRequestsError
-from padwan_llm.openai.client import _OpenAIBase
+from padwan_llm.openai.client import OpenAIClient, _OpenAIBase
 from piou import CommandError, Option
 
 from .breakdown import format_breakdown, prompt_breakdown
-from .env import DEFAULT_STREAM_RETRIES, DEFAULT_TIMEOUT, ENV_PREFIX
-from .logs import log, log_request, timing_detail
+from .claude_config import write_claude_config
+from .defaults import DEFAULT_STREAM_RETRIES, DEFAULT_TIMEOUT, ENV_PREFIX
+from .logs import log, log_request, route, timing_detail
 from .trace import session_context
 from .utils import console
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from padwan_llm.anthropic.models import CountTokensResponse, MessagesBody
+    from padwan_llm.anthropic.models import CountTokensResponse
+    from padwan_llm.openai.types import CreateChatCompletionRequest
 
 __all__ = ("build_router", "main", "proxy_command")
 
@@ -76,11 +82,62 @@ async def _timed_chunks(
         yield chunk
 
 
-async def _mark_first_chunk(
+def _normalize_reasoning(data: dict[str, Any]) -> None:
+    """Expose Scaleway's reasoning alias to the Anthropic translator."""
+    for choice in data.get("choices") or []:
+        for key in ("message", "delta"):
+            message = choice.get(key)
+            if isinstance(message, dict) and "reasoning_content" not in message:
+                reasoning = message.get("reasoning")
+                if isinstance(reasoning, str) and reasoning:
+                    message["reasoning_content"] = reasoning
+
+
+def _validate_body(body: AnthropicCompatBody) -> None:
+    """Validate Claude Code's inline system extension without changing the request."""
+    projection = body
+    if isinstance(body, dict) and isinstance(body.get("messages"), list):
+        messages = []
+        for message in body["messages"]:
+            if isinstance(message, dict) and message.get("role") == "system":
+                content = message.get("content")
+                if not isinstance(content, str) and not (
+                    isinstance(content, list)
+                    and all(
+                        isinstance(block, dict) and block.get("type") == "text"
+                        for block in content
+                    )
+                ):
+                    raise ValueError("inline system messages require text content")
+                message = {**message, "role": "user"}
+            messages.append(message)
+        projection = {**body, "messages": messages}
+    msgspec.convert(projection, type=AnthropicCompatBody)
+
+
+def _translate_body(
+    body: AnthropicCompatBody, *, model: str
+) -> CreateChatCompletionRequest:
+    """Preserve inline system roles and ordering through the upstream translator."""
+    translated = messages_to_openai(body, model=model)
+    if not any(message["role"] == "system" for message in body["messages"]):
+        return translated
+    # Keep full-conversation tool selection; rebuild only the message sequence.
+    translated["messages"] = messages_to_openai({**body, "messages": []})["messages"]
+    for message in body["messages"]:
+        segment: AnthropicCompatBody = {**body, "system": "", "messages": [message]}
+        if message["role"] == "system":
+            segment = {**body, "system": message["content"], "messages": []}
+        translated["messages"].extend(messages_to_openai(segment)["messages"])
+    return translated
+
+
+async def _prepare_chunks(
     chunks: AsyncIterator[Any], seen: list[bool]
 ) -> AsyncIterator[Any]:
-    """Pass chunks through, setting seen[0] once the backend emitted its first."""
+    """Normalize reasoning fields and mark the first backend chunk."""
     async for chunk in chunks:
+        _normalize_reasoning(chunk)
         seen[0] = True
         yield chunk
 
@@ -91,14 +148,9 @@ def _make_client(
     api_key_env: str | None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> _OpenAIBase:
-    """Build the backend client, delegating env resolution to `LLMClient`.
-
-    padwan-llm handles `PADWAN_BASE_URL` gateway mode and prefers
-    `PADWAN_API_KEY` for custom endpoints; an explicit ``--api-key-env``
-    overrides both. Without any URL, `LLMClient` would route by model name
-    to a provider's native endpoint — never what a proxy wants, so refuse.
-    """
-    if not (backend_url or os.environ.get(PADWAN_BASE_URL_ENV)):
+    """Build the backend client with explicit, Padwan, then OpenAI key precedence."""
+    backend_url = backend_url or os.environ.get(PADWAN_BASE_URL_ENV)
+    if not backend_url:
         raise CommandError(
             f"No backend URL: pass --backend-url or set {PADWAN_BASE_URL_ENV}"
         )
@@ -107,30 +159,32 @@ def _make_client(
         api_key = os.environ.get(api_key_env)
         if not api_key:
             raise CommandError(f"{api_key_env} not set")
-    if api_key is None and not os.environ.get(PADWAN_API_KEY_ENV):
+    else:
+        api_key = os.environ.get(PADWAN_API_KEY_ENV) or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
         console.print(
-            f"[yellow]{PADWAN_API_KEY_ENV} not set; connecting to the backend "
+            "[yellow]No backend API key set; connecting to the backend "
             "unauthenticated (fine for local servers)[/yellow]"
         )
-    client = LLMClient(
+    return OpenAIClient(
         model=model,
         base_url=backend_url,
-        api_key=api_key,
+        api_key=api_key or "no-key-required",
         # (connect, read) tuple: a read timeout long enough for a silent
         # reasoning model must not also let a dead host hang that long.
         timeout=cast(float, (_CONNECT_TIMEOUT, timeout)),
     )
-    if not isinstance(client, _OpenAIBase):
-        raise CommandError(f"Backend for {model!r} is not OpenAI-compatible")
-    return client
 
 
 def _pick_model(requested: str, *, model: str, small_model: str | None) -> str:
     """Route the requested Anthropic model to a backend model.
 
     Anthropic clients use their small model tier (haiku) for lightweight
-    internal calls; everything else gets the main model.
+    internal calls; everything else gets the main model. A client configured
+    with the backend names (`--claude-config`) already asks for them directly.
     """
+    if requested in (model, small_model):
+        return requested
     if small_model and "haiku" in requested:
         return small_model
     return model
@@ -207,7 +261,7 @@ def build_router(
                 proto, request_body, requested_model, target_model, req_xlate, detail
             )
         except RSGIProtocolClosed:
-            log.info("%s → %s | client disconnected", requested_model, target_model)
+            log.info("%s | client disconnected", route(requested_model, target_model))
 
     async def _stream_body(
         proto: RSGIHTTPProtocol,
@@ -234,7 +288,7 @@ def build_router(
                 if timings:
                     chunks = _timed_chunks(chunks, backend_wait)
                 events = stream_to_anthropic(
-                    _mark_first_chunk(chunks, first_chunk), model=requested_model
+                    _prepare_chunks(chunks, first_chunk), model=requested_model
                 )
                 # message_start is emitted before any backend I/O; hold frames
                 # until the backend produced a chunk so a failed attempt stays
@@ -260,9 +314,8 @@ def build_router(
             except Exception as e:  # error mid-stream: report in-band, Anthropic style
                 if sent or attempt >= stream_retries or not _retryable_stream_error(e):
                     log.warning(
-                        "%s → %s | stream failed after %.2fs: %s",
-                        requested_model,
-                        target_model,
+                        "%s | stream failed after %.2fs: %s",
+                        route(requested_model, target_model),
                         time.monotonic() - start,
                         e,
                     )
@@ -271,9 +324,8 @@ def build_router(
                     return
                 attempt += 1
                 log.warning(
-                    "%s → %s | stream attempt %d failed after %.2fs: %s — retrying",
-                    requested_model,
-                    target_model,
+                    "%s | stream attempt %d failed after %.2fs: %s — retrying",
+                    route(requested_model, target_model),
                     attempt,
                     time.monotonic() - attempt_start,
                     e,
@@ -295,19 +347,34 @@ def build_router(
 
     @router.post("/v1/messages")
     async def messages(scope: RSGIScope, proto: RSGIHTTPProtocol) -> Response | None:
-        body = cast("MessagesBody", _json_loads(await proto()))
-        requested_model = body["model"]
-        target = _pick_model(requested_model, model=model, small_model=small_model)
-        # Image-bearing requests need a multimodal backend, whatever the tier.
-        if vision_model and _has_images(cast(list, body["messages"])):
-            target = vision_model
-        # Anthropic clients ask for large budgets (32k); backends cap lower.
-        body["max_tokens"] = min(body["max_tokens"], max_output_tokens)
-        xlate_start = time.perf_counter()
-        openai_body = messages_to_openai(body, model=target)
-        req_xlate = time.perf_counter() - xlate_start
-        detail = format_breakdown(prompt_breakdown(body)) if breakdown else ""
-        session = _client_session(cast("dict[str, Any]", body))
+        try:
+            body = cast("AnthropicCompatBody", _json_loads(await proto()))
+            # Validate known fields while retaining extension fields for translation.
+            _validate_body(body)
+            if not body["model"] or not body["messages"] or body["max_tokens"] <= 0:
+                raise ValueError(
+                    "model and messages must be nonempty; max_tokens must be positive"
+                )
+            requested_model = body["model"]
+            target = _pick_model(requested_model, model=model, small_model=small_model)
+            # Image-bearing requests need a multimodal backend, whatever the tier.
+            if vision_model and _has_images(cast(list, body["messages"])):
+                target = vision_model
+            # Anthropic clients ask for large budgets (32k); backends cap lower.
+            body["max_tokens"] = min(body["max_tokens"], max_output_tokens)
+            xlate_start = time.perf_counter()
+            openai_body = _translate_body(body, model=target)
+            req_xlate = time.perf_counter() - xlate_start
+            detail = format_breakdown(prompt_breakdown(body)) if breakdown else ""
+            session = _client_session(cast("dict[str, Any]", body))
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            return Response(
+                {
+                    "type": "error",
+                    "error": {"type": "invalid_request_error", "message": str(e)},
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
         if body.get("stream"):
             with session_context(session):
                 await _stream(
@@ -325,15 +392,15 @@ def build_router(
                 data, _ = await client.complete(openai_body)
         except Exception as e:
             log.warning(
-                "%s → %s | request failed after %.2fs: %s",
-                requested_model,
-                target,
+                "%s | request failed after %.2fs: %s",
+                route(requested_model, target),
                 time.monotonic() - start,
                 e,
             )
             status, error_body = error_to_anthropic(e)
             return Response(error_body, status=status)
         backend_s = time.monotonic() - start
+        _normalize_reasoning(cast("dict[str, Any]", data))
         resp = response_to_anthropic(data, model=requested_model)
         elapsed = time.monotonic() - start + req_xlate
         log_request(
@@ -389,6 +456,17 @@ def proxy_command(
         help="Backend read timeout in seconds, applied per stream gap "
         "(reasoning models can stay silent for minutes)",
     ),
+    claude_config: Path | None = Option(
+        None,
+        "--claude-config",
+        help="Write Claude Code settings into this config directory",
+        raise_path_does_not_exist=False,
+    ),
+    context_window: int | None = Option(
+        None,
+        "--context-window",
+        help="Backend context window in tokens for Claude Code auto-compaction",
+    ),
     stream_retries: int = Option(
         DEFAULT_STREAM_RETRIES,
         "--stream-retries",
@@ -416,6 +494,11 @@ def proxy_command(
         help="Like -v, plus a per-request prompt split: system, tool schemas "
         "(grouped by MCP server), and message history",
     ),
+    rich: bool = Option(
+        False,
+        "--rich",
+        help="Render the -v request log with colours and aligned columns",
+    ),
     timings: bool = Option(
         False,
         "-vv",
@@ -429,9 +512,25 @@ def proxy_command(
     Point an Anthropic client at it, e.g.:
     ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=dummy claude
     """
+    if context_window is not None and context_window <= 0:
+        raise CommandError("--context-window must be greater than zero")
+
     # Validate configuration in the CLI process for clean errors; workers
     # rebuild the client from the env snapshot below.
     _make_client(backend_url, model, api_key_env)
+
+    resolved_backend_url = backend_url or os.environ.get(PADWAN_BASE_URL_ENV)
+    if claude_config is not None:
+        write_claude_config(
+            claude_config,
+            host=host,
+            port=port,
+            model=model,
+            small_model=small_model,
+            backend_url=resolved_backend_url,
+            timeout=timeout,
+            context_window=context_window,
+        )
 
     env: dict[str, str | None] = {
         "BACKEND_URL": backend_url,
@@ -447,6 +546,7 @@ def proxy_command(
         "VERBOSE": "1" if (verbose or timings or breakdown) else "",
         "TIMINGS": "1" if timings else "",
         "BREAKDOWN": "1" if breakdown else "",
+        "RICH": "1" if rich else "",
     }
     for key, value in env.items():
         if value:
@@ -456,7 +556,7 @@ def proxy_command(
 
     console.print(
         f"[green]Anthropic-compatible proxy on http://{host}:{port} "
-        f"→ {backend_url or os.environ.get(PADWAN_BASE_URL_ENV)} "
+        f"→ {resolved_backend_url} "
         f"(model={model}, small={small_model or model}, "
         f"vision={vision_model or 'none'})[/green]"
     )

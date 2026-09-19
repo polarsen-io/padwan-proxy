@@ -1,0 +1,12 @@
+{
+  "ANTHROPIC_BASE_URL": {{ base_url | tojson }},
+  "ANTHROPIC_AUTH_TOKEN": "dummy",
+  "ANTHROPIC_MODEL": {{ model | tojson }},
+  "ANTHROPIC_DEFAULT_OPUS_MODEL": {{ model | tojson }},
+  "ANTHROPIC_DEFAULT_SONNET_MODEL": {{ model | tojson }},
+  "ANTHROPIC_DEFAULT_HAIKU_MODEL": {{ small_model | tojson }},
+  "API_TIMEOUT_MS": {{ timeout_ms | tojson }},
+  "CLAUDE_CODE_ENABLE_TELEMETRY": "1"{% if context_window %},
+  "CLAUDE_CODE_AUTO_COMPACT_WINDOW": {{ context_window | tojson }}{% endif %}{% if otel_attrs %},
+  "OTEL_RESOURCE_ATTRIBUTES": {{ otel_attrs | tojson }}{% endif %}
+}
