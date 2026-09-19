@@ -4,6 +4,7 @@ import logging
 import re
 from contextlib import contextmanager
 from typing import Any, cast
+from unittest.mock import Mock
 
 import pytest
 import uvicorn
@@ -16,7 +17,13 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from padwan_proxy.proxy import _client_session, _make_client, build_router
+from padwan_proxy.proxy import (
+    _client_session,
+    _make_client,
+    _translate_body,
+    _validate_body,
+    build_router,
+)
 
 TEXT_CHUNKS = [
     {"choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hel"}}]},
@@ -83,6 +90,7 @@ class FakeBackend:
     def __init__(self) -> None:
         self.last_body: dict[str, Any] | None = None
         self.stream_chunks: list[dict[str, Any]] = TEXT_CHUNKS
+        self.completion: dict[str, Any] = COMPLETION
         self.status_code = 200
         self.calls = 0
         self.fail_first = 0  # first N calls answer fail_status instead of streaming
@@ -120,7 +128,7 @@ class FakeBackend:
                         yield line
 
                 return StreamingResponse(_gen(), media_type="text/event-stream")
-            return JSONResponse(COMPLETION)
+            return JSONResponse(self.completion)
 
         return Starlette(
             routes=[Route("/chat/completions", chat_completions, methods=["POST"])]
@@ -334,6 +342,149 @@ async def test_messages_stream_tool_call(proxy):
     assert backend.last_body["tools"][0]["function"]["name"] == "get_weather"
 
 
+@pytest.mark.parametrize(
+    "reasoning, answer",
+    [
+        pytest.param(
+            {"reasoning_content": "Seven groups of eight."},
+            {"content": "56"},
+            id="reasoning_content",
+        ),
+        pytest.param(
+            {"reasoning": "Seven groups of eight."},
+            {"content": "56"},
+            id="scaleway_reasoning",
+        ),
+        pytest.param(
+            {
+                "reasoning": "Ignored alias",
+                "reasoning_content": "Seven groups of eight.",
+            },
+            {"content": "56"},
+            id="native_reasoning_takes_precedence",
+        ),
+        pytest.param(
+            {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": [
+                            {"type": "text", "text": "Seven groups of eight."}
+                        ],
+                    }
+                ]
+            },
+            {"content": [{"type": "text", "text": "56"}]},
+            id="structured_thinking",
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
+)
+async def test_thinking_models_separate_thoughts_and_answer(
+    proxy, reasoning, answer, stream
+):
+    backend, router = proxy
+    message = {**reasoning, **answer}
+    if isinstance(reasoning.get("content"), list):
+        message["content"] = reasoning["content"] + answer["content"]
+    backend.completion = {
+        **COMPLETION,
+        "choices": [{"message": message, "finish_reason": "stop"}],
+    }
+    backend.stream_chunks = [
+        {"choices": [{"index": 0, "delta": delta}]} for delta in (reasoning, answer)
+    ] + TEXT_CHUNKS[-2:]
+    proto = await post(
+        router,
+        "/v1/messages",
+        _messages_body(
+            stream=stream,
+            thinking={"type": "enabled", "budget_tokens": 1024},
+            max_tokens=2048,
+        ),
+    )
+    assert proto.status == 200
+    if stream:
+        events = _parse_sse(proto)
+        starts = [
+            event["content_block"]["type"]
+            for name, event in events
+            if name == "content_block_start"
+        ]
+        assert starts == ["thinking", "text"]
+        deltas = [
+            event["delta"] for name, event in events if name == "content_block_delta"
+        ]
+        assert deltas == [
+            {"type": "thinking_delta", "thinking": "Seven groups of eight."},
+            {"type": "text_delta", "text": "56"},
+        ]
+        assert [
+            event["index"] for name, event in events if name == "content_block_stop"
+        ] == [0, 1]
+        assert events[-2][1]["delta"]["stop_reason"] == "end_turn"
+        assert events[-1][0] == "message_stop"
+    else:
+        response = json.loads(proto.body)
+        assert response["content"] == [
+            {"type": "thinking", "thinking": "Seven groups of eight."},
+            {"type": "text", "text": "56"},
+        ]
+        assert response["stop_reason"] == "end_turn"
+
+
+async def test_thinking_tool_turn_can_be_replayed(proxy):
+    backend, router = proxy
+    backend.stream_chunks = [
+        {
+            "choices": [
+                {"index": 0, "delta": {"reasoning_content": "Check the weather."}}
+            ]
+        }
+    ] + TOOL_CHUNKS
+    proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    events = _parse_sse(proto)
+    assert [
+        event["content_block"]["type"]
+        for name, event in events
+        if name == "content_block_start"
+    ] == ["thinking", "tool_use"]
+    assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
+    followup = _messages_body(
+        messages=[
+            {"role": "user", "content": "Weather in Paris?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Check the weather."},
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "get_weather",
+                        "input": {"city": "Paris"},
+                    },
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny"}
+                ],
+            },
+        ]
+    )
+    response = await post(router, "/v1/messages", followup)
+    assert response.status == 200
+    assert backend.last_body["messages"][-1] == {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "content": "Sunny",
+    }
+    assert backend.last_body["messages"][1]["tool_calls"][0]["id"] == "call_1"
+
+
 # stream retries
 
 
@@ -515,6 +666,137 @@ async def test_max_tokens_clamped_to_backend_cap(proxy):
     assert backend.last_body["max_tokens"] == 16384
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b"{", id="malformed_json"),
+        pytest.param(b"[]", id="not_an_object"),
+        pytest.param(b"{}", id="missing_fields"),
+        *[
+            pytest.param(json.dumps(_messages_body(**override)).encode(), id=name)
+            for name, override in (
+                ("tokens_string", {"max_tokens": "100"}),
+                ("tokens_bool", {"max_tokens": True}),
+                ("tokens_zero", {"max_tokens": 0}),
+                ("tokens_negative", {"max_tokens": -1}),
+                ("model_empty", {"model": ""}),
+                ("messages_empty", {"messages": []}),
+                ("message_not_object", {"messages": ["hello"]}),
+                ("invalid_role", {"messages": [{"role": "unknown", "content": "hi"}]}),
+                (
+                    "system_nontext",
+                    {
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "x",
+                                        "content": "hi",
+                                    }
+                                ],
+                            }
+                        ]
+                    },
+                ),
+                ("metadata_not_object", {"metadata": "bad"}),
+                ("stream_not_bool", {"stream": "true"}),
+                ("tool_not_object", {"tools": ["bad"]}),
+            )
+        ],
+    ],
+)
+async def test_invalid_messages_rejected_before_backend(proxy, raw):
+    backend, router = proxy
+    proto = FakeProto(raw)
+    await router.dispatch(FakeScope(method="POST", path="/v1/messages"), proto)
+    assert proto.status == 400
+    error = json.loads(proto.body)
+    assert error["type"] == "error"
+    assert error["error"]["type"] == "invalid_request_error"
+    assert backend.calls == 0
+
+
+async def test_request_extensions_reach_translator(proxy, monkeypatch):
+    from padwan_proxy import proxy as proxy_module
+
+    _, router = proxy
+    translate = Mock(wraps=proxy_module.messages_to_openai)
+    monkeypatch.setattr(proxy_module, "messages_to_openai", translate)
+    tool = {
+        "name": "custom_tool",
+        "input_schema": {"type": "object"},
+        "defer_loading": True,
+    }
+    proto = await post(router, "/v1/messages", _messages_body(tools=[tool]))
+    assert proto.status == 200
+    assert translate.call_args.args[0]["tools"] == [tool]
+
+
+@pytest.mark.parametrize(
+    "inline_system",
+    [
+        pytest.param("inline instructions", id="string"),
+        pytest.param(
+            [{"type": "text", "text": "inline instructions"}], id="text_blocks"
+        ),
+    ],
+)
+def test_inline_system_translation_preserves_order_and_tool_result(inline_system):
+    body = _messages_body(
+        system="top-level instructions",
+        messages=[
+            {"role": "user", "content": "Read the file."},
+            {"role": "system", "content": inline_system},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "read-1",
+                        "name": "Read",
+                        "input": {"file_path": "fact.txt"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "read-1",
+                        "content": [{"type": "text", "text": "probe-token"}],
+                    }
+                ],
+            },
+        ],
+    )
+
+    _validate_body(body)
+    translated = _translate_body(body, model="glm-5.2")
+
+    assert translated["messages"] == [
+        {"role": "system", "content": "top-level instructions"},
+        {"role": "user", "content": "Read the file."},
+        {"role": "system", "content": "inline instructions"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read-1",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": '{"file_path":"fact.txt"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "read-1", "content": "probe-token"},
+    ]
+
+
 async def test_backend_error_mapped_to_anthropic_shape(proxy):
     backend, router = proxy
     backend.status_code = 400
@@ -542,19 +824,29 @@ async def test_unknown_route_404(proxy):
 
 
 @pytest.mark.parametrize(
-    "body_extra, expected_kind",
+    "body_extra, expected_kind, expected_route",
     [
-        pytest.param({}, "complete", id="non_stream"),
-        pytest.param({"stream": True}, "stream", id="stream"),
+        pytest.param({}, "complete", "claude-sonnet-5 → glm-4.6", id="non_stream"),
+        pytest.param(
+            {"stream": True}, "stream", "claude-sonnet-5 → glm-4.6", id="stream"
+        ),
+        pytest.param(
+            {"model": "glm-small"}, "complete", "glm-small", id="backend_small"
+        ),
+        pytest.param(
+            {"model": "glm-4.6", "stream": True}, "stream", "glm-4.6", id="backend_main"
+        ),
     ],
 )
-async def test_requests_logged(proxy, caplog, body_extra, expected_kind):
+async def test_requests_logged(
+    proxy, caplog, body_extra, expected_kind, expected_route
+):
     _, router = proxy
     with caplog.at_level(logging.INFO, logger="padwan_proxy"):
         await post(router, "/v1/messages", _messages_body(**body_extra))
     (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
     message = record.getMessage()
-    assert "claude-sonnet-5 → glm-4.6" in message
+    assert message.split(" | ", 1)[0] == expected_route
     assert expected_kind in message
     assert "end_turn" in message
     assert "in=10 out=2" in message
@@ -607,7 +899,11 @@ def clean_env(monkeypatch):
     "env, backend_url, api_key_env, expected_url, expected_key",
     [
         pytest.param(
-            {"MY_KEY": "sk-explicit"},
+            {
+                "MY_KEY": "sk-explicit",
+                "PADWAN_API_KEY": "sk-gw",
+                "OPENAI_API_KEY": "sk-openai",
+            },
             "https://api.example.com/v1/",
             "MY_KEY",
             "https://api.example.com/v1/",
@@ -633,6 +929,33 @@ def clean_env(monkeypatch):
             "sk-gw",
             id="gateway_url_fallback",
         ),
+        pytest.param(
+            {"OPENAI_API_KEY": "sk-openai"},
+            "https://api.example.com/v1/",
+            None,
+            "https://api.example.com/v1/",
+            "sk-openai",
+            id="openai_key_fallback",
+        ),
+        pytest.param(
+            {
+                "PADWAN_BASE_URL": "https://gw.example.com/v1/",
+                "OPENAI_API_KEY": "sk-openai",
+            },
+            None,
+            None,
+            "https://gw.example.com/v1/",
+            "sk-openai",
+            id="gateway_openai_key_fallback",
+        ),
+        pytest.param(
+            {},
+            "https://api.example.com/v1/",
+            None,
+            "https://api.example.com/v1/",
+            "no-key-required",
+            id="unauthenticated_backend",
+        ),
     ],
 )
 def test_make_client_resolution(
@@ -648,11 +971,25 @@ def test_make_client_resolution(
 
 
 @pytest.mark.parametrize(
+    "model",
+    [
+        pytest.param("gemini-2.5-pro", id="gemini_name"),
+        pytest.param("claude-sonnet-4", id="anthropic_name"),
+    ],
+)
+def test_custom_endpoint_always_uses_openai_transport(clean_env, model):
+    client = _make_client("https://backend.example/v1/", model, None)
+    assert client.base_url == "https://backend.example/v1/"
+    assert client.provider == "openai"
+    assert client._api_key == "no-key-required"
+
+
+@pytest.mark.parametrize(
     "env, backend_url, api_key_env, match",
     [
         pytest.param({}, None, None, "No backend URL", id="no_url"),
         pytest.param(
-            {},
+            {"PADWAN_API_KEY": "sk-gw", "OPENAI_API_KEY": "sk-openai"},
             "https://api.example.com/v1/",
             "MY_KEY",
             "MY_KEY not set",

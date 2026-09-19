@@ -9,16 +9,19 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "padwan-llm>=0.9.2",
-    "piou>=0.36.0",
+    "padwan-llm>=0.10.1",
+    "piou>=0.37.0",
     "gravier>=0.1.0",
-    "orjson>=3.11",
+    "orjson>=3.12",
+    "msgspec>=0.19",
+    # --claude-config renders the client settings.json
+    "jinja2>=3.1.6",
 ]
 
 [project.optional-dependencies]
 # `--trace` observability: Langfuse or OTLP export.
 trace = [
-    "padwan-llm[langfuse]>=0.9.2",
+    "padwan-llm[langfuse]>=0.10.1",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
 ]
@@ -35,23 +38,23 @@ module-root = ""
 
 [dependency-groups]
 dev = [
-    "pyright>=1.1.400",
+    "pyright>=1.1.414",
     # fake OpenAI backend in tests
-    "starlette>=0.47",
-    "uvicorn>=0.35",
+    "starlette>=1.6",
+    "uvicorn>=0.53",
     # http client for ASGIBridge tests
-    "niquests>=3.21.0",
-    "pytest>=8.0.0",
-    "pytest-asyncio>=1.0.0",
-    "pytest-cov>=6.0.0",
-    "ruff>=0.11.0",
+    "niquests>=3.21.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.8",
     # keep the trace extra type-checkable/testable in dev
-    "padwan-llm[langfuse]>=0.9.2",
+    "padwan-llm[langfuse]>=0.10.1",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
 ]
 bump = [
-    "commitizen>=4.0.0",
+    "commitizen>=4.18.1",
 ]
 
 [tool.commitizen]
@@ -61,7 +64,11 @@ tag_format = "$version"
 update_changelog_on_bump = true
 
 [tool.pytest.ini_options]
+addopts = "-m 'not e2e'"
 asyncio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests requiring a real reasoning backend",
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
