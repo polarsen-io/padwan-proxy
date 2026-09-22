@@ -10,7 +10,8 @@ import pytest
 import uvicorn
 from granian._granian import RSGIProtocolClosed
 from gravier.testing import FakeProto, FakeScope
-from padwan_llm.openai.client import OpenAIClient
+from padwan_ai.gemini.client import GeminiClient
+from padwan_ai.openai.client import OpenAIClient
 from piou import CommandError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -19,6 +20,7 @@ from starlette.routing import Route
 
 from padwan_proxy.proxy import (
     _client_session,
+    _error_detail,
     _make_client,
     _translate_body,
     _validate_body,
@@ -856,6 +858,21 @@ async def test_requests_logged(
     )
 
 
+@pytest.mark.parametrize(
+    "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
+)
+async def test_session_logged_in_request_head(proxy, caplog, stream):
+    _, router = proxy
+    body = _messages_body(
+        stream=stream,
+        metadata={"user_id": json.dumps({"session_id": "a7cade63-session"})},
+    )
+    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
+        await post(router, "/v1/messages", body)
+    (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
+    assert record.getMessage().startswith("a7cade63 ")
+
+
 @pytest.mark.parametrize("proxy", [{"breakdown": True}], indirect=True)
 async def test_breakdown_logged(proxy, caplog):
     _, router = proxy
@@ -875,14 +892,65 @@ async def test_breakdown_logged(proxy, caplog):
     assert "argent" in second and "builtin" in second
 
 
-async def test_backend_error_logged_as_warning(proxy, caplog):
+@pytest.mark.parametrize(
+    "stream",
+    [pytest.param(True, id="stream"), pytest.param(False, id="complete")],
+)
+async def test_tool_use_log_names_the_tools(proxy, caplog, stream):
     backend, router = proxy
-    backend.status_code = 400
+    backend.stream_chunks = TOOL_CHUNKS
+    backend.completion = {
+        **COMPLETION,
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "get_weather",
+                                "arguments": '{"city": "Paris"}',
+                            },
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+    }
     with caplog.at_level(logging.INFO, logger="padwan_proxy"):
-        await post(router, "/v1/messages", _messages_body())
+        await post(router, "/v1/messages", _messages_body(stream=stream))
+    (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
+    assert "tool_use(get_weather)" in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        pytest.param(400, id="bad_request"),
+        pytest.param(402, id="quota"),
+        pytest.param(429, id="rate_limit"),
+    ],
+)
+@pytest.mark.parametrize(
+    "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
+)
+async def test_backend_error_logged_as_warning(proxy, caplog, status, stream):
+    backend, router = proxy
+    backend.status_code = status
+    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
+        await post(router, "/v1/messages", _messages_body(stream=stream))
     (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
     assert record.levelno == logging.WARNING
-    assert "request failed" in record.getMessage()
+    assert ("stream failed" if stream else "request failed") in record.getMessage()
+    assert f"HTTP {status}" in record.getMessage()
+
+
+def test_empty_backend_error_includes_exception_type():
+    assert _error_detail(TimeoutError()) == "TimeoutError()"
 
 
 # _make_client
@@ -971,16 +1039,17 @@ def test_make_client_resolution(
 
 
 @pytest.mark.parametrize(
-    "model",
+    "model, provider",
     [
-        pytest.param("gemini-2.5-pro", id="gemini_name"),
-        pytest.param("claude-sonnet-4", id="anthropic_name"),
+        pytest.param("gemini-2.5-pro", "gemini", id="gemini_name"),
+        pytest.param("claude-sonnet-4", "openai", id="anthropic_name"),
+        pytest.param("glm-4.6", "openai", id="openai_compatible_name"),
     ],
 )
-def test_custom_endpoint_always_uses_openai_transport(clean_env, model):
+def test_custom_endpoint_transport_by_model(clean_env, model, provider):
     client = _make_client("https://backend.example/v1/", model, None)
     assert client.base_url == "https://backend.example/v1/"
-    assert client.provider == "openai"
+    assert client.provider == provider
     assert client._api_key == "no-key-required"
 
 
@@ -1003,3 +1072,244 @@ def test_make_client_errors(clean_env, env, backend_url, api_key_env, match):
     with pytest.raises(CommandError) as exc:
         _make_client(backend_url, "glm-4.6", api_key_env)
     assert match in exc.value.message
+
+
+# --- Native Gemini backend -------------------------------------------------
+
+
+GEMINI_USAGE = {
+    "promptTokenCount": 10,
+    "candidatesTokenCount": 2,
+    "totalTokenCount": 12,
+}
+
+GEMINI_TEXT_CHUNKS = [
+    {
+        "candidates": [
+            {"content": {"parts": [{"text": "Hello"}]}, "finishReason": "STOP"}
+        ]
+    },
+    {"usageMetadata": GEMINI_USAGE},
+]
+
+GEMINI_TOOL_CHUNKS = [
+    {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "get_weather",
+                                "args": {"city": "Paris"},
+                                "id": "call_1",
+                            }
+                        }
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    },
+    {"usageMetadata": GEMINI_USAGE},
+]
+
+GEMINI_COMPLETION = {
+    "candidates": [
+        {"content": {"parts": [{"text": "Hello!"}]}, "finishReason": "STOP"}
+    ],
+    "usageMetadata": GEMINI_USAGE,
+}
+
+
+class FakeGeminiBackend:
+    """Native Gemini :generateContent / :streamGenerateContent stub."""
+
+    def __init__(self) -> None:
+        self.last_body: dict[str, Any] | None = None
+        self.stream_chunks: list[dict[str, Any]] = GEMINI_TEXT_CHUNKS
+        self.completion: dict[str, Any] = GEMINI_COMPLETION
+
+    def app(self) -> Starlette:
+        async def generate(request: Request) -> Response:
+            self.last_body = cast("dict[str, Any]", await request.json())
+            return JSONResponse(self.completion)
+
+        async def stream_generate(request: Request) -> Response:
+            self.last_body = cast("dict[str, Any]", await request.json())
+            lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in self.stream_chunks]
+
+            async def _gen():
+                for line in lines:
+                    yield line
+
+            return StreamingResponse(_gen(), media_type="text/event-stream")
+
+        return Starlette(
+            routes=[
+                Route(
+                    "/models/gemini-2.5-flash:generateContent",
+                    generate,
+                    methods=["POST"],
+                ),
+                Route(
+                    "/models/gemini-2.5-flash:streamGenerateContent",
+                    stream_generate,
+                    methods=["POST"],
+                ),
+            ]
+        )
+
+
+@pytest.fixture
+async def gemini_proxy(request):
+    """A proxy backed by a native GeminiClient pointed at FakeGeminiBackend."""
+    backend = FakeGeminiBackend()
+    backend_server, backend_task, backend_port = await _serve(backend.app())
+    client = GeminiClient(
+        model="gemini-2.5-flash",
+        base_url=f"http://127.0.0.1:{backend_port}/",
+        api_key="test-key",
+        timeout=cast(float, (10.0, 3600.0)),
+    )
+    async with client:
+        router = build_router(
+            client=client,
+            model="gemini-2.5-flash",
+            small_model="gemini-2.5-flash-lite",
+            **getattr(request, "param", {}),
+        )
+        yield backend, router
+    backend_server.should_exit = True
+    await backend_task
+
+
+async def test_gemini_non_stream(gemini_proxy):
+    backend, router = gemini_proxy
+    proto = await post(router, "/v1/messages", _messages_body())
+    assert proto.status == 200
+    data = json.loads(proto.body)
+    assert data["role"] == "assistant"
+    assert data["model"] == "claude-sonnet-5"
+    assert data["content"] == [{"type": "text", "text": "Hello!"}]
+    assert data["stop_reason"] == "end_turn"
+    assert data["usage"] == {"input_tokens": 10, "output_tokens": 2}
+    assert backend.last_body["contents"] == [
+        {"role": "user", "parts": [{"text": "hello"}]}
+    ]
+    assert backend.last_body["generationConfig"]["maxOutputTokens"] == 100
+    # Gemini path must not carry OpenAI-only shims.
+    assert "stream_options" not in backend.last_body
+
+
+async def test_gemini_stream_text(gemini_proxy):
+    backend, router = gemini_proxy
+    proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    assert proto.status == 200
+    events = _parse_sse(proto)
+    assert [name for name, _ in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    text = "".join(
+        e["delta"]["text"] for _, e in events if e["type"] == "content_block_delta"
+    )
+    assert text == "Hello"
+    assert events[-2][1]["usage"] == {"input_tokens": 10, "output_tokens": 2}
+
+
+async def test_gemini_stream_tool_call(gemini_proxy):
+    backend, router = gemini_proxy
+    backend.stream_chunks = GEMINI_TOOL_CHUNKS
+    proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    assert proto.status == 200
+    events = _parse_sse(proto)
+    start = [e for _, e in events if e["type"] == "content_block_start"][0]
+    assert start["content_block"]["type"] == "tool_use"
+    assert start["content_block"]["name"] == "get_weather"
+    deltas = [e["delta"] for _, e in events if e["type"] == "content_block_delta"]
+    expected = {"type": "input_json_delta", "partial_json": '{"city":"Paris"}'}
+    assert deltas[-1] == expected
+    assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
+
+
+async def test_gemini_thinking_then_text(gemini_proxy):
+    backend, router = gemini_proxy
+    backend.stream_chunks = [
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "reasoning", "thought": True},
+                            {"text": "answer"},
+                        ]
+                    },
+                    "finishReason": "STOP",
+                }
+            ]
+        },
+        {"usageMetadata": GEMINI_USAGE},
+    ]
+    proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    events = _parse_sse(proto)
+    block_starts = [
+        e["content_block"]["type"]
+        for _, e in events
+        if e["type"] == "content_block_start"
+    ]
+    assert block_starts == ["thinking", "text"]
+
+
+async def test_gemini_tool_turn_round_trips(gemini_proxy):
+    """An assistant tool_use + tool_result round-trips through Gemini's
+    functionCall/functionResponse wire shapes."""
+    backend, router = gemini_proxy
+    body = _messages_body(
+        messages=[
+            {"role": "user", "content": "weather?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "call_1",
+                        "name": "get_weather",
+                        "input": {"city": "Paris"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call_1",
+                        "content": '{"temp": 18}',
+                    }
+                ],
+            },
+        ]
+    )
+    await post(router, "/v1/messages", body)
+    contents = backend.last_body["contents"]
+    assert contents[1] == {
+        "role": "model",
+        "parts": [
+            {
+                "functionCall": {
+                    "name": "get_weather",
+                    "args": {"city": "Paris"},
+                    "id": "call_1",
+                }
+            }
+        ],
+    }
+    assert contents[2]["parts"][0]["functionResponse"] == {
+        "name": "call_1",
+        "response": {"temp": 18},
+    }
