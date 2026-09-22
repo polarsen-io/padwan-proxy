@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 from typing import Any
 
 from .utils import console
@@ -9,6 +10,7 @@ log = logging.getLogger("padwan_proxy")
 _INDENT = " " * 9
 
 _STOP_STYLE = {"end_turn": "green", "tool_use": "blue", "max_tokens": "yellow"}
+_KIND_EMOJI = {"stream": "🌊", "complete": "📦"}
 
 _rich = False
 
@@ -50,6 +52,21 @@ def route(requested: str, target: str) -> str:
     return target if requested == target else f"{requested} → {target}"
 
 
+def _tools(names: Sequence[str], *, top: int = 4) -> str:
+    """`(Read, Bash, +3)` — which tools the model asked for, truncated."""
+    if not names:
+        return ""
+    extra = len(names) - top
+    listed = ", ".join(names[:top]) + (f", +{extra}" if extra > 0 else "")
+    return f"({listed})"
+
+
+def _rate(usage: dict[str, Any], elapsed: float) -> str:
+    """Output throughput, blank when the request was too short to be meaningful."""
+    out = usage.get("output_tokens") or 0
+    return f" {out / elapsed:.0f} tok/s" if out and elapsed > 0 else ""
+
+
 def log_request(
     requested: str,
     target: str,
@@ -58,19 +75,25 @@ def log_request(
     usage: dict[str, Any],
     stop_reason: str | None,
     elapsed: float,
-    timing: str = "",
-    breakdown: str = "",
+    tools: Sequence[str] = (),
+    timing: str | None = None,
+    breakdown: str | None = None,
+    session: str | None = None,
 ) -> None:
     cached = usage.get("cache_read_input_tokens")
+    head = _style(route(requested, target), "bold cyan")
+    if session:
+        head = f"{_style(session[:8], 'dim')} {head}"
     log.info(
         "%s | %s | %s | in=%s out=%s%s | %s%s%s",
-        _style(route(requested, target), "bold cyan"),
-        _style(kind, "dim"),
-        _style(stop_reason or "?", _STOP_STYLE.get(stop_reason or "", "yellow")),
+        head,
+        _KIND_EMOJI.get(kind, kind) if _rich else kind,
+        _style(stop_reason or "?", _STOP_STYLE.get(stop_reason or "", "yellow"))
+        + _style(_tools(tools), "dim"),
         usage.get("input_tokens", 0),
         usage.get("output_tokens", 0),
         f" cached={cached}" if cached else "",
-        _style(f"{elapsed:.2f}s", "magenta"),
+        _style(f"{elapsed:.2f}s{_rate(usage, elapsed)}", "magenta"),
         _style(timing, "dim") if timing else "",
         f"\n{'' if _rich else _INDENT}{_style(breakdown, 'dim')}" if breakdown else "",
     )

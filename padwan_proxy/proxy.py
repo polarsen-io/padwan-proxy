@@ -3,39 +3,55 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import socket
 import time
 from http import HTTPStatus
+from importlib.util import find_spec
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 import msgspec
 from granian._granian import RSGIHTTPProtocol, RSGIProtocolClosed
 from gravier import AddressInUseError, Response, Router, RSGIScope, serve
-from padwan_llm._json import dumps as _json_dumps, loads as _json_loads
-from padwan_llm.anthropic.compat import messages_to_openai
-from padwan_llm.anthropic.events import (
+from padwan_ai._json import dumps as _json_dumps, loads as _json_loads
+from padwan_ai.anthropic.compat import messages_to_openai
+from padwan_ai.anthropic.events import (
     error_to_anthropic,
     response_to_anthropic,
     stream_to_anthropic,
 )
-from padwan_llm.anthropic.models import AnthropicCompatBody
-from padwan_llm.client import PADWAN_API_KEY_ENV, PADWAN_BASE_URL_ENV
-from padwan_llm.errors import LLMError, QuotaExceededError, TooManyRequestsError
-from padwan_llm.openai.client import OpenAIClient, _OpenAIBase
+from padwan_ai.anthropic.gemini_compat import (
+    gemini_response_to_anthropic,
+    gemini_stream_to_anthropic,
+    messages_to_gemini,
+)
+from padwan_ai.anthropic.models import AnthropicCompatBody
+from padwan_ai.client import PADWAN_API_KEY_ENV, PADWAN_BASE_URL_ENV
+from padwan_ai.errors import LLMError, QuotaExceededError, TooManyRequestsError
+from padwan_ai.gemini.client import GeminiClient, is_gemini_model
+from padwan_ai.openai.client import OpenAIClient, _OpenAIBase
 from piou import CommandError, Option
 
-from .breakdown import format_breakdown, prompt_breakdown
-from .claude_config import write_claude_config
-from .defaults import DEFAULT_STREAM_RETRIES, DEFAULT_TIMEOUT, ENV_PREFIX
+from .breakdown import format_breakdown, format_tree, prompt_breakdown
+from .claude_config import client_base_url, write_claude_config
+from .defaults import (
+    DEFAULT_APPROVAL_CONFIDENCE,
+    DEFAULT_LAYA_MODEL,
+    DEFAULT_STREAM_RETRIES,
+    DEFAULT_TIMEOUT,
+    ENV_PREFIX,
+)
 from .logs import log, log_request, route, timing_detail
+from .systemone import Laya, SystemOneRequest
 from .trace import session_context
-from .utils import console
+from .utils import console, startup_banner
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from padwan_llm.anthropic.models import CountTokensResponse
-    from padwan_llm.openai.types import CreateChatCompletionRequest
+    from padwan_ai.anthropic.models import CountTokensResponse
+    from padwan_ai.openai.types import CreateChatCompletionRequest
+    from padwan_ai.typesafe.models import Question
 
 __all__ = ("build_router", "main", "proxy_command")
 
@@ -48,6 +64,25 @@ SSE_HEADERS = [
 _RETRY_BACKOFF = 0.5
 
 _CONNECT_TIMEOUT = 10.0
+
+# Either OpenAI-compatible or the native Gemini client; both share
+# complete()/stream() returning provider-native bodies.
+_BackendClient = _OpenAIBase | GeminiClient
+
+
+def _port_answers(host: str, port: int) -> bool:
+    """Whether something already serves this port.
+
+    Granian binds with SO_REUSEPORT, so a second proxy silently shares the port
+    instead of failing, and requests round-robin between two different configs.
+    """
+    with socket.socket() as probe:
+        probe.settimeout(0.5)
+        dialable = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+        return probe.connect_ex((dialable, port)) == 0
+
+
+_MAX_SYSTEM_ONE_BODY = 64 * 1024
 
 _CLIENT_STATUS = re.compile(r"^\[[\w-]+\] (4\d\d)")
 
@@ -65,6 +100,21 @@ def _retryable_stream_error(e: Exception) -> bool:
             return _CLIENT_STATUS.match(str(e)) is None
         case _:
             return True
+
+
+def _error_detail(e: Exception) -> str:
+    """Describe an exception even when it has no message."""
+    detail = str(e) or repr(e)
+    cause: BaseException | None = e
+    seen: set[int] = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
+        response = getattr(cause, "response", None)
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return f"HTTP {status}: {detail}"
+        cause = cause.__cause__ or cause.__context__
+    return detail
 
 
 async def _timed_chunks(
@@ -142,13 +192,27 @@ async def _prepare_chunks(
         yield chunk
 
 
+async def _mark_first_chunk(
+    chunks: AsyncIterator[Any], seen: list[bool]
+) -> AsyncIterator[Any]:
+    """Mark the first backend chunk without normalizing (Gemini path)."""
+    async for chunk in chunks:
+        seen[0] = True
+        yield chunk
+
+
 def _make_client(
     backend_url: str | None,
     model: str,
     api_key_env: str | None,
     timeout: float = DEFAULT_TIMEOUT,
-) -> _OpenAIBase:
-    """Build the backend client with explicit, Padwan, then OpenAI key precedence."""
+) -> _BackendClient:
+    """Build the backend client with explicit, Padwan, then OpenAI key precedence.
+
+    Native Gemini models (name starts with `gemini`) get the GeminiClient,
+    which speaks Gemini's REST API; everything else uses the OpenAI-compatible
+    client pointed at the configured backend URL.
+    """
     backend_url = backend_url or os.environ.get(PADWAN_BASE_URL_ENV)
     if not backend_url:
         raise CommandError(
@@ -166,14 +230,17 @@ def _make_client(
             "[yellow]No backend API key set; connecting to the backend "
             "unauthenticated (fine for local servers)[/yellow]"
         )
-    return OpenAIClient(
-        model=model,
-        base_url=backend_url,
-        api_key=api_key or "no-key-required",
+    client_kwargs: dict[str, Any] = {
+        "model": model,
+        "base_url": backend_url,
+        "api_key": api_key or "no-key-required",
         # (connect, read) tuple: a read timeout long enough for a silent
         # reasoning model must not also let a dead host hang that long.
-        timeout=cast(float, (_CONNECT_TIMEOUT, timeout)),
-    )
+        "timeout": cast(float, (_CONNECT_TIMEOUT, timeout)),
+    }
+    if is_gemini_model(model):
+        return GeminiClient(**client_kwargs)
+    return OpenAIClient(**client_kwargs)
 
 
 def _pick_model(requested: str, *, model: str, small_model: str | None) -> str:
@@ -233,9 +300,18 @@ def _sse(name: str, payload: dict[str, Any]) -> str:
     return f"event: {name}\ndata: {_json_dumps(payload)}\n\n"
 
 
+def _tool_names(content: list[Any]) -> list[str]:
+    """Names of the tool_use blocks in an Anthropic response body."""
+    return [
+        block.get("name") or "?"
+        for block in content
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+
+
 def build_router(
     *,
-    client: _OpenAIBase,
+    client: _BackendClient,
     model: str,
     small_model: str | None = None,
     vision_model: str | None = None,
@@ -243,8 +319,10 @@ def build_router(
     stream_retries: int = DEFAULT_STREAM_RETRIES,
     timings: bool = False,
     breakdown: bool = False,
+    rich: bool = False,
+    laya: Laya | None = None,
 ) -> Router:
-    """Build the Anthropic-compatible RSGI router over an OpenAI-compatible client."""
+    """Build the Anthropic-compatible RSGI router over an OpenAI or Gemini client."""
     router = Router()
 
     async def _stream(
@@ -254,11 +332,20 @@ def build_router(
         target_model: str,
         req_xlate: float,
         detail: str,
+        session: str | None,
+        gemini: bool,
     ) -> None:
         # Client disconnect mid-stream closes the transport; expected, not a fault.
         try:
             await _stream_body(
-                proto, request_body, requested_model, target_model, req_xlate, detail
+                proto,
+                request_body,
+                requested_model,
+                target_model,
+                req_xlate,
+                detail,
+                session,
+                gemini,
             )
         except RSGIProtocolClosed:
             log.info("%s | client disconnected", route(requested_model, target_model))
@@ -270,11 +357,15 @@ def build_router(
         target_model: str,
         req_xlate: float,
         detail: str,
+        session: str | None,
+        gemini: bool,
     ) -> None:
         start = time.monotonic()
         backend_wait = [0.0]
-        # Without this OpenAI-compatible backends omit usage from the final chunk.
-        request_body.setdefault("stream_options", {"include_usage": True})
+        # Without this OpenAI-compatible backends omit usage from the final chunk;
+        # Gemini includes usageMetadata regardless, so the option is skipped there.
+        if not gemini:
+            request_body.setdefault("stream_options", {"include_usage": True})
         transport = proto.response_stream(200, SSE_HEADERS)
         sent = False
         attempt = 0
@@ -282,13 +373,26 @@ def build_router(
             attempt_start = time.monotonic()
             usage: dict[str, Any] = {}
             stop_reason: str | None = None
+            tools_called: list[str] = []
             first_chunk = [False]
             try:
-                chunks: AsyncIterator[Any] = client.stream(cast(Any, request_body))
+                chunks: AsyncIterator[Any] = client.stream(
+                    cast(Any, request_body),
+                    **({"model": target_model} if gemini else {}),
+                )
                 if timings:
                     chunks = _timed_chunks(chunks, backend_wait)
-                events = stream_to_anthropic(
-                    _prepare_chunks(chunks, first_chunk), model=requested_model
+                # Gemini needs no reasoning normalization; mark the first chunk
+                # so the hold-until-first-chunk replay window still opens.
+                prepared = (
+                    _mark_first_chunk(chunks, first_chunk)
+                    if gemini
+                    else _prepare_chunks(chunks, first_chunk)
+                )
+                events = (
+                    gemini_stream_to_anthropic(prepared, model=requested_model)
+                    if gemini
+                    else stream_to_anthropic(prepared, model=requested_model)
                 )
                 # message_start is emitted before any backend I/O; hold frames
                 # until the backend produced a chunk so a failed attempt stays
@@ -298,6 +402,10 @@ def build_router(
                     if name == "message_delta":
                         usage = payload.get("usage") or {}
                         stop_reason = (payload.get("delta") or {}).get("stop_reason")
+                    elif name == "content_block_start":
+                        block = payload.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            tools_called.append(block.get("name") or "?")
                     if not first_chunk[0]:
                         held.append(_sse(name, payload))
                         continue
@@ -315,9 +423,11 @@ def build_router(
                 if sent or attempt >= stream_retries or not _retryable_stream_error(e):
                     log.warning(
                         "%s | stream failed after %.2fs: %s",
-                        route(requested_model, target_model),
+                        f"{session[:8]} {route(requested_model, target_model)}"
+                        if session
+                        else route(requested_model, target_model),
                         time.monotonic() - start,
-                        e,
+                        _error_detail(e),
                     )
                     _, body = error_to_anthropic(e)
                     await transport.send_str(_sse("error", body))
@@ -325,10 +435,12 @@ def build_router(
                 attempt += 1
                 log.warning(
                     "%s | stream attempt %d failed after %.2fs: %s — retrying",
-                    route(requested_model, target_model),
+                    f"{session[:8]} {route(requested_model, target_model)}"
+                    if session
+                    else route(requested_model, target_model),
                     attempt,
                     time.monotonic() - attempt_start,
-                    e,
+                    _error_detail(e),
                 )
                 await asyncio.sleep(_RETRY_BACKOFF * 2 ** (attempt - 1))
         elapsed = time.monotonic() - start
@@ -339,10 +451,12 @@ def build_router(
             usage=usage,
             stop_reason=stop_reason,
             elapsed=elapsed,
+            tools=tools_called,
             timing=timing_detail(elapsed + req_xlate, backend_wait[0], req_xlate)
             if timings
-            else "",
+            else None,
             breakdown=detail,
+            session=session,
         )
 
     @router.post("/v1/messages")
@@ -362,10 +476,16 @@ def build_router(
                 target = vision_model
             # Anthropic clients ask for large budgets (32k); backends cap lower.
             body["max_tokens"] = min(body["max_tokens"], max_output_tokens)
+            gemini = is_gemini_model(target)
             xlate_start = time.perf_counter()
-            openai_body = _translate_body(body, model=target)
+            backend_body = (
+                messages_to_gemini(body, model=target)
+                if gemini
+                else cast("dict[str, Any]", _translate_body(body, model=target))
+            )
             req_xlate = time.perf_counter() - xlate_start
-            detail = format_breakdown(prompt_breakdown(body)) if breakdown else ""
+            fmt = format_tree if rich else format_breakdown
+            detail = fmt(prompt_breakdown(body)) if breakdown else ""
             session = _client_session(cast("dict[str, Any]", body))
         except (ValueError, TypeError, KeyError, AttributeError) as e:
             return Response(
@@ -379,29 +499,38 @@ def build_router(
             with session_context(session):
                 await _stream(
                     proto,
-                    cast("dict[str, Any]", openai_body),
+                    cast("dict[str, Any]", backend_body),
                     requested_model,
                     target,
                     req_xlate,
                     detail,
+                    session,
+                    gemini,
                 )
             return None
         start = time.monotonic()
         try:
             with session_context(session):
-                data, _ = await client.complete(openai_body)
+                data, _ = await client.complete(cast(Any, backend_body))
         except Exception as e:
             log.warning(
                 "%s | request failed after %.2fs: %s",
-                route(requested_model, target),
+                f"{session[:8]} {route(requested_model, target)}"
+                if session
+                else route(requested_model, target),
                 time.monotonic() - start,
-                e,
+                _error_detail(e),
             )
             status, error_body = error_to_anthropic(e)
             return Response(error_body, status=status)
         backend_s = time.monotonic() - start
-        _normalize_reasoning(cast("dict[str, Any]", data))
-        resp = response_to_anthropic(data, model=requested_model)
+        if not gemini:
+            _normalize_reasoning(cast("dict[str, Any]", data))
+        resp = (
+            gemini_response_to_anthropic(cast(Any, data), model=requested_model)
+            if gemini
+            else response_to_anthropic(cast(Any, data), model=requested_model)
+        )
         elapsed = time.monotonic() - start + req_xlate
         log_request(
             requested_model,
@@ -410,8 +539,10 @@ def build_router(
             usage=cast("dict[str, Any]", resp.get("usage") or {}),
             stop_reason=resp.get("stop_reason"),
             elapsed=elapsed,
-            timing=timing_detail(elapsed, backend_s, req_xlate) if timings else "",
+            tools=_tool_names(cast("list[Any]", resp.get("content") or [])),
+            timing=timing_detail(elapsed, backend_s, req_xlate) if timings else None,
             breakdown=detail,
+            session=session,
         )
         return Response(resp)
 
@@ -422,6 +553,55 @@ def build_router(
             "input_tokens": max(1, len(await proto()) // 4)
         }
         return Response(estimate)
+
+    if laya is not None:
+        # TypeSafe's System One route, answered locally: --approvals laya points
+        # the Claude Code hook here instead of api.typesafe.ai.
+        @router.post("/systemone")
+        async def system_one(scope: RSGIScope, proto: RSGIHTTPProtocol) -> Response:
+            raw = await proto()
+            if len(raw) > _MAX_SYSTEM_ONE_BODY:
+                return Response(
+                    {"error": "request too large"},
+                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+            try:
+                body = msgspec.convert(_json_loads(raw), type=SystemOneRequest)
+            except (msgspec.ValidationError, ValueError) as e:
+                return Response({"error": str(e)}, status=HTTPStatus.BAD_REQUEST)
+            if not body["questions"]:
+                return Response(
+                    {"error": "questions must not be empty"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+            # Laya silently drops the state tail past its window, which would hide
+            # the very tool call being judged: refuse instead of answering blind.
+            if not laya.fits(body["state"]):
+                log.warning(
+                    "systemone | state over the %d-token window, refused",
+                    laya.state_budget,
+                )
+                return Response(
+                    {"error": f"state exceeds {laya.state_budget} tokens"},
+                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+            start = time.monotonic()
+            try:
+                answers = await laya.system_one(
+                    body["state"], cast("dict[str, Question]", body["questions"])
+                )
+            except Exception as e:
+                log.warning("systemone | local inference failed: %s", e)
+                return Response(
+                    {"error": "local inference failed"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            log.info(
+                "systemone | %d question(s) in %.0fms",
+                len(body["questions"]),
+                (time.monotonic() - start) * 1000,
+            )
+            return Response(answers)
 
     return router
 
@@ -466,6 +646,30 @@ def proxy_command(
         None,
         "--context-window",
         help="Backend context window in tokens for Claude Code auto-compaction",
+    ),
+    approvals: str | None = Option(
+        None,
+        "--approvals",
+        choices=["jev", "laya"],
+        help="Approve Claude Code tool calls with this model: `jev` calls the "
+        "TypeSafe API, `laya` runs locally on this proxy (needs the `laya` extra)",
+    ),
+    no_approvals: bool = Option(
+        False,
+        "--no-approvals",
+        help="Remove the approval hook from the Claude Code config",
+    ),
+    approval_model: str | None = Option(
+        None,
+        "--approval-model",
+        help="Checkpoint or API model to approve with "
+        "(default: jev-latest, or convaiinnovations/laya)",
+    ),
+    approval_confidence: float | None = Option(
+        None,
+        "--approval-confidence",
+        help="Confidence a verdict needs to allow or deny instead of the default "
+        "0.99 (the local checkpoints report far less)",
     ),
     stream_retries: int = Option(
         DEFAULT_STREAM_RETRIES,
@@ -514,12 +718,39 @@ def proxy_command(
     """
     if context_window is not None and context_window <= 0:
         raise CommandError("--context-window must be greater than zero")
+    if approvals and no_approvals:
+        raise CommandError("pass only one of --approvals or --no-approvals")
+    # Jev lives entirely in the hook, so it is useless without settings to write;
+    # laya also serves /systemone, which is the whole point of the Docker image.
+    if (approvals == "jev" or no_approvals) and claude_config is None:
+        flag = "--approvals jev" if approvals else "--no-approvals"
+        raise CommandError(f"{flag} requires --claude-config")
+    if approvals == "laya" and find_spec("laya") is None:
+        raise CommandError(
+            "--approvals laya needs the `laya` extra: uv sync --extra laya"
+        )
+    if approval_model and not approvals:
+        raise CommandError("--approval-model requires --approvals")
+    if approval_confidence is not None:
+        if not approvals:
+            raise CommandError("--approval-confidence requires --approvals")
+        if not 0 < approval_confidence <= 1:
+            raise CommandError("--approval-confidence must be within (0, 1]")
+
+    if _port_answers(host, port):
+        raise CommandError(
+            f"port {port} is already served; stop that proxy first "
+            "(granian would share the port instead of failing)"
+        )
 
     # Validate configuration in the CLI process for clean errors; workers
     # rebuild the client from the env snapshot below.
     _make_client(backend_url, model, api_key_env)
 
     resolved_backend_url = backend_url or os.environ.get(PADWAN_BASE_URL_ENV)
+    local = approvals == "laya"
+    approval_model = approval_model or (DEFAULT_LAYA_MODEL if local else None)
+    approvals_config = True if approvals else False if no_approvals else None
     if claude_config is not None:
         write_claude_config(
             claude_config,
@@ -530,6 +761,12 @@ def proxy_command(
             backend_url=resolved_backend_url,
             timeout=timeout,
             context_window=context_window,
+            approvals=approvals_config,
+            approvals_url=client_base_url(host, port) if local else None,
+            # The proxy already loaded the local checkpoint; the hook needs the
+            # name only to pick a hosted model.
+            approvals_model=None if local else approval_model,
+            approvals_confidence=approval_confidence,
         )
 
     env: dict[str, str | None] = {
@@ -547,6 +784,7 @@ def proxy_command(
         "TIMINGS": "1" if timings else "",
         "BREAKDOWN": "1" if breakdown else "",
         "RICH": "1" if rich else "",
+        "LAYA_MODEL": approval_model if local else "",
     }
     for key, value in env.items():
         if value:
@@ -555,10 +793,24 @@ def proxy_command(
             os.environ.pop(ENV_PREFIX + key, None)
 
     console.print(
-        f"[green]Anthropic-compatible proxy on http://{host}:{port} "
-        f"→ {resolved_backend_url} "
-        f"(model={model}, small={small_model or model}, "
-        f"vision={vision_model or 'none'})[/green]"
+        startup_banner(
+            {
+                "listen": f"http://{host}:{port}",
+                "backend": resolved_backend_url or "?",
+                "model": model,
+                "small": small_model or f"{model} [dim](same)[/dim]",
+                "vision": vision_model or "[dim]none[/dim]",
+                "approvals": {
+                    # Show the gate even at its default: it is why laya only asks.
+                    True: f"[green]{approval_model or approvals}[/green]"
+                    + (" [dim]local[/dim]" if local else "")
+                    + f" [dim]over {approval_confidence or DEFAULT_APPROVAL_CONFIDENCE}"
+                    + "[/dim]",
+                    False: "[dim]hook disabled[/dim]",
+                    None: "[dim]hook unchanged[/dim]",
+                }[approvals_config],
+            }
+        )
     )
     try:
         serve("padwan_proxy.rsgi:app", host=host, port=port)
