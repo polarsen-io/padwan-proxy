@@ -34,13 +34,13 @@ class _CapturedText(list[str]):
 
 
 def _install_openai_content_compat(otel: Any) -> None:
-    # padwan-llm 0.10.1 assumes raw OpenAI content is always a string.
+    # padwan-ai 0.11.1 still assumes raw OpenAI content is always a string.
     install = getattr(otel, "_install", None)
     if not callable(install) or not all(
         hasattr(otel, name) for name in ("_output_message", "_RawChoice")
     ):
         raise RuntimeError(
-            "padwan-llm OpenTelemetry internals changed; structured content "
+            "padwan-ai OpenTelemetry internals changed; structured content "
             "compatibility is unavailable"
         )
 
@@ -70,19 +70,34 @@ def _install_openai_content_compat(otel: Any) -> None:
 
 def _enable_langfuse(*, capture_content: bool) -> None:
     global _langfuse_active
-    from padwan_llm import otel
-    from padwan_llm.langfuse import instrument
+    from padwan_ai import otel
+    from padwan_ai.langfuse import instrument
 
     integration = instrument(capture_content=capture_content)
+    otlp_endpoint = os.environ.get(
+        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"
+    ) or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
     try:
+        if otlp_endpoint:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
+            from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+            integration.tracer_provider.add_span_processor(
+                BatchSpanProcessor(OTLPSpanExporter())
+            )
         if capture_content:
             _install_openai_content_compat(otel)
     except BaseException:
         integration.shutdown()
+        integration.tracer_provider.shutdown()
         raise
+    atexit.register(integration.tracer_provider.shutdown)
     atexit.register(integration.shutdown)
     _langfuse_active = True
-    console.print("[dim]Tracing enabled (Langfuse)[/dim]")
+    destinations = f"Langfuse + OTLP → {otlp_endpoint}" if otlp_endpoint else "Langfuse"
+    console.print(f"[dim]Tracing enabled ({destinations})[/dim]")
 
 
 def session_context(session_id: str | None) -> AbstractContextManager[Any]:
@@ -104,7 +119,7 @@ def _enable_otlp(*, capture_content: bool) -> None:
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    from padwan_llm import otel
+    from padwan_ai import otel
 
     resource = Resource.create({"service.name": "padwan-proxy"})
     tracer_provider = TracerProvider(resource=resource)
@@ -135,11 +150,11 @@ def _enable_otlp(*, capture_content: bool) -> None:
 
 
 def enable_tracing(*, capture_content: bool = False) -> None:
-    """Instrument padwan-llm clients for this process.
+    """Instrument padwan-ai clients for this process.
 
-    Exports to Langfuse when `LANGFUSE_PUBLIC_KEY` is set (the adapter reads
-    the standard `LANGFUSE_*` env vars), otherwise over OTLP using the
-    standard `OTEL_EXPORTER_OTLP_*` env vars. Exporters are flushed at exit.
+    Exports to Langfuse when `LANGFUSE_PUBLIC_KEY` is set, and also to OTLP
+    when an OTLP endpoint is explicit; otherwise defaults to OTLP alone.
+    Exporters are flushed at exit.
     `capture_content` also records prompts and completions on the spans.
     """
     try:

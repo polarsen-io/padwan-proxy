@@ -2,7 +2,12 @@ from typing import Any, cast
 
 import pytest
 
-from padwan_proxy.breakdown import PromptBreakdown, format_breakdown, prompt_breakdown
+from padwan_proxy.breakdown import (
+    PromptBreakdown,
+    format_breakdown,
+    format_tree,
+    prompt_breakdown,
+)
 
 
 def _tool(name: str, filler: str = "") -> dict:
@@ -104,3 +109,36 @@ def test_format_breakdown_caps_the_source_list():
         by_source=(("a", 4), ("b", 3), ("c", 2), ("d", 1)),
     )
     assert format_breakdown(breakdown, top=2).endswith("| top: a 4, b 3")
+
+
+@pytest.mark.parametrize(
+    "breakdown, expected",
+    [
+        pytest.param(
+            PromptBreakdown(
+                system=1500,
+                tools=15_000,
+                tool_count=15,
+                messages=37_000,
+                by_source=(("builtin", 13_900), ("argent", 1100)),
+            ),
+            [
+                "├─ sys         1.5k",
+                "├─ tools        15k (15)",
+                "│  ├─ builtin   14k",
+                "│  └─ argent   1.1k",
+                "└─ msgs         37k",
+            ],
+            id="sources_branch_under_tools",
+        ),
+        pytest.param(
+            PromptBreakdown(
+                system=800, tools=0, tool_count=0, messages=2400, by_source=()
+            ),
+            ["├─ sys     800", "├─ tools     0 (0)", "└─ msgs   2.4k"],
+            id="no_tools_no_branches",
+        ),
+    ],
+)
+def test_format_tree(breakdown, expected):
+    assert format_tree(breakdown).splitlines() == expected

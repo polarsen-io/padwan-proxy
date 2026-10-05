@@ -91,6 +91,7 @@ class FakeBackend:
 
     def __init__(self) -> None:
         self.last_body: dict[str, Any] | None = None
+        self.bodies: list[dict[str, Any]] = []
         self.stream_chunks: list[dict[str, Any]] = TEXT_CHUNKS
         self.completion: dict[str, Any] = COMPLETION
         self.status_code = 200
@@ -104,6 +105,7 @@ class FakeBackend:
         async def chat_completions(request: Request) -> Response:
             body: dict[str, Any] = await request.json()
             self.last_body = body
+            self.bodies.append(body)
             self.calls += 1
             if self.status_code != 200:
                 return JSONResponse(
@@ -660,6 +662,32 @@ async def test_model_routing(proxy, model, messages, expected_model):
     backend, router = proxy
     await post(router, "/v1/messages", _messages_body(model=model, messages=messages))
     assert backend.last_body["model"] == expected_model
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        pytest.param([{"type": "text", "text": "look"}, IMAGE_BLOCK], id="user_image"),
+        pytest.param(
+            [{"type": "tool_result", "tool_use_id": "t1", "content": [IMAGE_BLOCK]}],
+            id="image_in_tool_result",
+        ),
+    ],
+)
+@pytest.mark.parametrize("proxy", [{"vision_mode": "caption"}], indirect=True)
+async def test_caption_mode(proxy, content):
+    backend, router = proxy
+    body = _messages_body(messages=[{"role": "user", "content": content}])
+    await post(router, "/v1/messages", body)
+    caption_req, main_req = backend.bodies
+    assert caption_req["model"] == "pixtral-test"
+    assert caption_req["messages"][0]["content"][1]["type"] == "image_url"
+    assert main_req["model"] == "glm-4.6"
+    assert "image_url" not in json.dumps(main_req)
+    assert "[Image description]\\nHello!" in json.dumps(main_req)
+    # Claude Code replays history every turn: a seen image is not re-captioned.
+    await post(router, "/v1/messages", body)
+    assert [b["model"] for b in backend.bodies[2:]] == ["glm-4.6"]
 
 
 async def test_max_tokens_clamped_to_backend_cap(proxy):
