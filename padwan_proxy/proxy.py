@@ -147,7 +147,13 @@ def _normalize_reasoning(data: dict[str, Any]) -> None:
 def _validate_body(body: AnthropicCompatBody) -> None:
     """Validate Claude Code's inline system extension without changing the request."""
     projection = body
-    if isinstance(body, dict) and isinstance(body.get("messages"), list):
+    if (
+        isinstance(body, dict)
+        and isinstance(body.get("messages"), list)
+        and any(
+            isinstance(m, dict) and m.get("role") == "system" for m in body["messages"]
+        )
+    ):
         messages = []
         for message in body["messages"]:
             if isinstance(message, dict) and message.get("role") == "system":
@@ -174,11 +180,13 @@ def _translate_body(
     if not any(message["role"] == "system" for message in body["messages"]):
         return translated
     # Keep full-conversation tool selection; rebuild only the message sequence.
-    translated["messages"] = messages_to_openai({**body, "messages": []})["messages"]
+    # Segments carry no tools: translating messages needs none, and tools cost O(n).
+    base = cast(AnthropicCompatBody, {k: v for k, v in body.items() if k != "tools"})
+    translated["messages"] = messages_to_openai({**base, "messages": []})["messages"]
     for message in body["messages"]:
-        segment: AnthropicCompatBody = {**body, "system": "", "messages": [message]}
+        segment: AnthropicCompatBody = {**base, "system": "", "messages": [message]}
         if message["role"] == "system":
-            segment = {**body, "system": message["content"], "messages": []}
+            segment = {**base, "system": message["content"], "messages": []}
         translated["messages"].extend(messages_to_openai(segment)["messages"])
     return translated
 
@@ -189,15 +197,6 @@ async def _prepare_chunks(
     """Normalize reasoning fields and mark the first backend chunk."""
     async for chunk in chunks:
         _normalize_reasoning(chunk)
-        seen[0] = True
-        yield chunk
-
-
-async def _mark_first_chunk(
-    chunks: AsyncIterator[Any], seen: list[bool]
-) -> AsyncIterator[Any]:
-    """Mark the first backend chunk without normalizing (Gemini path)."""
-    async for chunk in chunks:
         seen[0] = True
         yield chunk
 
@@ -324,12 +323,14 @@ async def _caption_images(
         data, _ = await client.complete(cast(Any, body))
         return cast(Any, data)["choices"][0]["message"].get("content") or ""
 
+    # Request-local copy: eviction below must not drop a caption this request needs.
+    texts = {k: cache[k] for k in keys if k in cache}
     for key, text in zip(todo, await asyncio.gather(*map(caption, todo.values()))):
         if len(cache) >= _CAPTION_CACHE_SIZE:
             del cache[next(iter(cache))]
-        cache[key] = text
+        cache[key] = texts[key] = text
     for key, (container, i) in zip(keys, blocks):
-        container[i] = {"type": "text", "text": f"[Image description]\n{cache[key]}"}
+        container[i] = {"type": "text", "text": f"[Image description]\n{texts[key]}"}
     return len(blocks)
 
 
@@ -440,13 +441,8 @@ def build_router(
                 )
                 if timings:
                     chunks = _timed_chunks(chunks, backend_wait)
-                # Gemini needs no reasoning normalization; mark the first chunk
-                # so the hold-until-first-chunk replay window still opens.
-                prepared = (
-                    _mark_first_chunk(chunks, first_chunk)
-                    if gemini
-                    else _prepare_chunks(chunks, first_chunk)
-                )
+                # Gemini chunks have no `choices`, so normalization is a no-op there.
+                prepared = _prepare_chunks(chunks, first_chunk)
                 events = (
                     gemini_stream_to_anthropic(prepared, model=requested_model)
                     if gemini
@@ -578,7 +574,9 @@ def build_router(
         start = time.monotonic()
         try:
             with session_context(session):
-                data, _ = await client.complete(cast(Any, backend_body))
+                data, _ = await client.complete(
+                    cast(Any, backend_body), **({"model": target} if gemini else {})
+                )
         except Exception as e:
             log.warning(
                 "%s | request failed after %.2fs: %s",
