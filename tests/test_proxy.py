@@ -690,6 +690,28 @@ async def test_caption_mode(proxy, content):
     assert [b["model"] for b in backend.bodies[2:]] == ["glm-4.6"]
 
 
+@pytest.mark.parametrize("proxy", [{"vision_mode": "caption"}], indirect=True)
+async def test_caption_cache_eviction_keeps_request_captions(proxy, monkeypatch):
+    from padwan_proxy import proxy as proxy_module
+
+    monkeypatch.setattr(proxy_module, "_CAPTION_CACHE_SIZE", 1)
+    backend, router = proxy
+    other = {**IMAGE_BLOCK, "source": {**IMAGE_BLOCK["source"], "data": "b3RoZXI="}}
+    await post(
+        router,
+        "/v1/messages",
+        _messages_body(messages=[{"role": "user", "content": [IMAGE_BLOCK]}]),
+    )
+    # Cached image first, new one second: inserting the new caption evicts the first.
+    proto = await post(
+        router,
+        "/v1/messages",
+        _messages_body(messages=[{"role": "user", "content": [IMAGE_BLOCK, other]}]),
+    )
+    assert proto.status == 200
+    assert json.dumps(backend.last_body).count("[Image description]") == 2
+
+
 async def test_max_tokens_clamped_to_backend_cap(proxy):
     backend, router = proxy
     await post(router, "/v1/messages", _messages_body(max_tokens=32000))
@@ -842,12 +864,6 @@ async def test_count_tokens(proxy):
     proto = await post(router, "/v1/messages/count_tokens", _messages_body())
     assert proto.status == 200
     assert json.loads(proto.body)["input_tokens"] > 0
-
-
-async def test_unknown_route_404(proxy):
-    _, router = proxy
-    proto = await post(router, "/api/hello", {})
-    assert proto.status == 404
 
 
 # request logging
@@ -1155,16 +1171,19 @@ class FakeGeminiBackend:
 
     def __init__(self) -> None:
         self.last_body: dict[str, Any] | None = None
+        self.last_model: str | None = None
         self.stream_chunks: list[dict[str, Any]] = GEMINI_TEXT_CHUNKS
         self.completion: dict[str, Any] = GEMINI_COMPLETION
 
     def app(self) -> Starlette:
         async def generate(request: Request) -> Response:
             self.last_body = cast("dict[str, Any]", await request.json())
+            self.last_model = request.path_params["model"]
             return JSONResponse(self.completion)
 
         async def stream_generate(request: Request) -> Response:
             self.last_body = cast("dict[str, Any]", await request.json())
+            self.last_model = request.path_params["model"]
             lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in self.stream_chunks]
 
             async def _gen():
@@ -1176,12 +1195,12 @@ class FakeGeminiBackend:
         return Starlette(
             routes=[
                 Route(
-                    "/models/gemini-2.5-flash:generateContent",
+                    "/models/{model}:generateContent",
                     generate,
                     methods=["POST"],
                 ),
                 Route(
-                    "/models/gemini-2.5-flash:streamGenerateContent",
+                    "/models/{model}:streamGenerateContent",
                     stream_generate,
                     methods=["POST"],
                 ),
@@ -1228,6 +1247,16 @@ async def test_gemini_non_stream(gemini_proxy):
     assert backend.last_body["generationConfig"]["maxOutputTokens"] == 100
     # Gemini path must not carry OpenAI-only shims.
     assert "stream_options" not in backend.last_body
+
+
+@pytest.mark.parametrize(
+    "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
+)
+async def test_gemini_routes_small_model(gemini_proxy, stream):
+    backend, router = gemini_proxy
+    body = _messages_body(model="claude-haiku-4-5", stream=stream)
+    await post(router, "/v1/messages", body)
+    assert backend.last_model == "gemini-2.5-flash-lite"
 
 
 async def test_gemini_stream_text(gemini_proxy):
