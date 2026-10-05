@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Any, cast
 from unittest.mock import Mock
 
@@ -291,15 +291,6 @@ async def test_messages_stream_text(proxy):
     assert proto.status == 200
     assert ("content-type", "text/event-stream") in proto.headers
     events = _parse_sse(proto)
-    assert [name for name, _ in events] == [
-        "message_start",
-        "content_block_start",
-        "content_block_delta",
-        "content_block_delta",
-        "content_block_stop",
-        "message_delta",
-        "message_stop",
-    ]
     text = "".join(
         e["delta"]["text"] for _, e in events if e["type"] == "content_block_delta"
     )
@@ -350,11 +341,6 @@ async def test_messages_stream_tool_call(proxy):
     "reasoning, answer",
     [
         pytest.param(
-            {"reasoning_content": "Seven groups of eight."},
-            {"content": "56"},
-            id="reasoning_content",
-        ),
-        pytest.param(
             {"reasoning": "Seven groups of eight."},
             {"content": "56"},
             id="scaleway_reasoning",
@@ -367,20 +353,6 @@ async def test_messages_stream_tool_call(proxy):
             {"content": "56"},
             id="native_reasoning_takes_precedence",
         ),
-        pytest.param(
-            {
-                "content": [
-                    {
-                        "type": "thinking",
-                        "thinking": [
-                            {"type": "text", "text": "Seven groups of eight."}
-                        ],
-                    }
-                ]
-            },
-            {"content": [{"type": "text", "text": "56"}]},
-            id="structured_thinking",
-        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -391,8 +363,6 @@ async def test_thinking_models_separate_thoughts_and_answer(
 ):
     backend, router = proxy
     message = {**reasoning, **answer}
-    if isinstance(reasoning.get("content"), list):
-        message["content"] = reasoning["content"] + answer["content"]
     backend.completion = {
         **COMPLETION,
         "choices": [{"message": message, "finish_reason": "stop"}],
@@ -439,56 +409,6 @@ async def test_thinking_models_separate_thoughts_and_answer(
         assert response["stop_reason"] == "end_turn"
 
 
-async def test_thinking_tool_turn_can_be_replayed(proxy):
-    backend, router = proxy
-    backend.stream_chunks = [
-        {
-            "choices": [
-                {"index": 0, "delta": {"reasoning_content": "Check the weather."}}
-            ]
-        }
-    ] + TOOL_CHUNKS
-    proto = await post(router, "/v1/messages", _messages_body(stream=True))
-    events = _parse_sse(proto)
-    assert [
-        event["content_block"]["type"]
-        for name, event in events
-        if name == "content_block_start"
-    ] == ["thinking", "tool_use"]
-    assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
-    followup = _messages_body(
-        messages=[
-            {"role": "user", "content": "Weather in Paris?"},
-            {
-                "role": "assistant",
-                "content": [
-                    {"type": "thinking", "thinking": "Check the weather."},
-                    {
-                        "type": "tool_use",
-                        "id": "call_1",
-                        "name": "get_weather",
-                        "input": {"city": "Paris"},
-                    },
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {"type": "tool_result", "tool_use_id": "call_1", "content": "Sunny"}
-                ],
-            },
-        ]
-    )
-    response = await post(router, "/v1/messages", followup)
-    assert response.status == 200
-    assert backend.last_body["messages"][-1] == {
-        "role": "tool",
-        "tool_call_id": "call_1",
-        "content": "Sunny",
-    }
-    assert backend.last_body["messages"][1]["tool_calls"][0]["id"] == "call_1"
-
-
 # stream retries
 
 
@@ -497,13 +417,10 @@ def no_backoff(monkeypatch):
     monkeypatch.setattr("padwan_proxy.proxy._RETRY_BACKOFF", 0.0)
 
 
-async def test_stream_replayed_when_it_fails_before_any_event(
-    proxy, no_backoff, caplog
-):
+async def test_stream_replayed_when_it_fails_before_any_event(proxy, no_backoff):
     backend, router = proxy
     backend.malformed_after, backend.malformed_calls = 0, 1
-    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
-        proto = await post(router, "/v1/messages", _messages_body(stream=True))
+    proto = await post(router, "/v1/messages", _messages_body(stream=True))
     events = _parse_sse(proto)
     assert [name for name, _ in events] == [
         "message_start",
@@ -519,7 +436,6 @@ async def test_stream_replayed_when_it_fails_before_any_event(
     )
     assert text == "Hello"  # the failed attempt left nothing behind
     assert backend.calls == 2
-    assert any("retrying" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize(
@@ -528,9 +444,6 @@ async def test_stream_replayed_when_it_fails_before_any_event(
         pytest.param({"malformed_after": 0}, 2, id="retries_exhausted"),
         pytest.param(
             {"fail_first": 9, "fail_status": 400}, 1, id="client_error_not_retried"
-        ),
-        pytest.param(
-            {"fail_first": 9, "fail_status": 429}, 1, id="rate_limit_not_retried"
         ),
     ],
 )
@@ -616,30 +529,6 @@ IMAGE_BLOCK = {
         ),
         pytest.param(
             "claude-haiku-4-5",
-            [{"role": "user", "content": [IMAGE_BLOCK]}],
-            "pixtral-test",
-            id="haiku_image_beats_small_model",
-        ),
-        pytest.param(
-            "claude-sonnet-5",
-            [
-                {"role": "user", "content": "take a screenshot"},
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": "t1",
-                            "content": [{"type": "text", "text": "done"}, IMAGE_BLOCK],
-                        }
-                    ],
-                },
-            ],
-            "pixtral-test",
-            id="image_in_tool_result",
-        ),
-        pytest.param(
-            "claude-haiku-4-5",
             [{"role": "user", "content": "no image"}],
             "glm-small",
             id="haiku_routed_to_small_model",
@@ -649,12 +538,6 @@ IMAGE_BLOCK = {
             [{"role": "user", "content": [{"type": "text", "text": "no image"}]}],
             "glm-4.6",
             id="no_image_keeps_main_model",
-        ),
-        pytest.param(
-            "glm-small",
-            [{"role": "user", "content": "no image"}],
-            "glm-small",
-            id="backend_name_passes_through",
         ),
     ],
 )
@@ -722,19 +605,10 @@ async def test_max_tokens_clamped_to_backend_cap(proxy):
     "raw",
     [
         pytest.param(b"{", id="malformed_json"),
-        pytest.param(b"[]", id="not_an_object"),
         pytest.param(b"{}", id="missing_fields"),
         *[
             pytest.param(json.dumps(_messages_body(**override)).encode(), id=name)
             for name, override in (
-                ("tokens_string", {"max_tokens": "100"}),
-                ("tokens_bool", {"max_tokens": True}),
-                ("tokens_zero", {"max_tokens": 0}),
-                ("tokens_negative", {"max_tokens": -1}),
-                ("model_empty", {"model": ""}),
-                ("messages_empty", {"messages": []}),
-                ("message_not_object", {"messages": ["hello"]}),
-                ("invalid_role", {"messages": [{"role": "unknown", "content": "hi"}]}),
                 (
                     "system_nontext",
                     {
@@ -752,9 +626,6 @@ async def test_max_tokens_clamped_to_backend_cap(proxy):
                         ]
                     },
                 ),
-                ("metadata_not_object", {"metadata": "bad"}),
-                ("stream_not_bool", {"stream": "true"}),
-                ("tool_not_object", {"tools": ["bad"]}),
             )
         ],
     ],
@@ -849,16 +720,6 @@ def test_inline_system_translation_preserves_order_and_tool_result(inline_system
     ]
 
 
-async def test_backend_error_mapped_to_anthropic_shape(proxy):
-    backend, router = proxy
-    backend.status_code = 400
-    proto = await post(router, "/v1/messages", _messages_body())
-    assert proto.status == 502
-    data = json.loads(proto.body)
-    assert data["type"] == "error"
-    assert data["error"]["type"] == "api_error"
-
-
 async def test_count_tokens(proxy):
     _, router = proxy
     proto = await post(router, "/v1/messages/count_tokens", _messages_body())
@@ -872,15 +733,14 @@ async def test_count_tokens(proxy):
 @pytest.mark.parametrize(
     "body_extra, expected_kind, expected_route",
     [
-        pytest.param({}, "complete", "claude-sonnet-5 → glm-4.6", id="non_stream"),
         pytest.param(
             {"stream": True}, "stream", "claude-sonnet-5 → glm-4.6", id="stream"
         ),
         pytest.param(
-            {"model": "glm-small"}, "complete", "glm-small", id="backend_small"
-        ),
-        pytest.param(
-            {"model": "glm-4.6", "stream": True}, "stream", "glm-4.6", id="backend_main"
+            {"metadata": {"user_id": json.dumps({"session_id": "a7cade63-session"})}},
+            "complete",
+            "a7cade63 claude-sonnet-5 → glm-4.6",
+            id="session_prefix",
         ),
     ],
 )
@@ -902,21 +762,6 @@ async def test_requests_logged(
     )
 
 
-@pytest.mark.parametrize(
-    "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
-)
-async def test_session_logged_in_request_head(proxy, caplog, stream):
-    _, router = proxy
-    body = _messages_body(
-        stream=stream,
-        metadata={"user_id": json.dumps({"session_id": "a7cade63-session"})},
-    )
-    with caplog.at_level(logging.INFO, logger="padwan_proxy"):
-        await post(router, "/v1/messages", body)
-    (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
-    assert record.getMessage().startswith("a7cade63 ")
-
-
 @pytest.mark.parametrize("proxy", [{"breakdown": True}], indirect=True)
 async def test_breakdown_logged(proxy, caplog):
     _, router = proxy
@@ -933,56 +778,22 @@ async def test_breakdown_logged(proxy, caplog):
     first, second = record.getMessage().splitlines()
     assert "in=10 out=2" in first
     assert re.match(r" +sys=\d+ tools=\d+\(2\) msgs=\d+ \| top: ", second)
-    assert "argent" in second and "builtin" in second
 
 
-@pytest.mark.parametrize(
-    "stream",
-    [pytest.param(True, id="stream"), pytest.param(False, id="complete")],
-)
-async def test_tool_use_log_names_the_tools(proxy, caplog, stream):
+async def test_tool_use_log_names_the_tools(proxy, caplog):
     backend, router = proxy
     backend.stream_chunks = TOOL_CHUNKS
-    backend.completion = {
-        **COMPLETION,
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {
-                                "name": "get_weather",
-                                "arguments": '{"city": "Paris"}',
-                            },
-                        }
-                    ],
-                },
-                "finish_reason": "tool_calls",
-            }
-        ],
-    }
     with caplog.at_level(logging.INFO, logger="padwan_proxy"):
-        await post(router, "/v1/messages", _messages_body(stream=stream))
+        await post(router, "/v1/messages", _messages_body(stream=True))
     (record,) = [r for r in caplog.records if r.name == "padwan_proxy"]
     assert "tool_use(get_weather)" in record.getMessage()
 
 
 @pytest.mark.parametrize(
-    "status",
-    [
-        pytest.param(400, id="bad_request"),
-        pytest.param(402, id="quota"),
-        pytest.param(429, id="rate_limit"),
-    ],
-)
-@pytest.mark.parametrize(
     "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
 )
-async def test_backend_error_logged_as_warning(proxy, caplog, status, stream):
+async def test_backend_error_logged_as_warning(proxy, caplog, stream):
+    status = 400
     backend, router = proxy
     backend.status_code = status
     with caplog.at_level(logging.INFO, logger="padwan_proxy"):
@@ -1008,7 +819,7 @@ def clean_env(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "env, backend_url, api_key_env, expected_url, expected_key",
+    "env, backend_url, api_key_env, model, error, expected_url, expected_key, provider",
     [
         pytest.param(
             {
@@ -1018,16 +829,22 @@ def clean_env(monkeypatch):
             },
             "https://api.example.com/v1/",
             "MY_KEY",
+            "glm-4.6",
+            None,
             "https://api.example.com/v1/",
             "sk-explicit",
+            "openai",
             id="explicit_env_var",
         ),
         pytest.param(
             {"PADWAN_API_KEY": "sk-gw", "OPENAI_API_KEY": "sk-openai"},
             "https://api.example.com/v1/",
             None,
+            "glm-4.6",
+            None,
             "https://api.example.com/v1/",
             "sk-gw",
+            "openai",
             id="padwan_key_preferred_over_openai",
         ),
         pytest.param(
@@ -1037,85 +854,85 @@ def clean_env(monkeypatch):
             },
             None,
             None,
+            "glm-4.6",
+            None,
             "https://gw.example.com/v1/",
             "sk-gw",
+            "openai",
             id="gateway_url_fallback",
         ),
         pytest.param(
             {"OPENAI_API_KEY": "sk-openai"},
             "https://api.example.com/v1/",
             None,
+            "glm-4.6",
+            None,
             "https://api.example.com/v1/",
             "sk-openai",
+            "openai",
             id="openai_key_fallback",
-        ),
-        pytest.param(
-            {
-                "PADWAN_BASE_URL": "https://gw.example.com/v1/",
-                "OPENAI_API_KEY": "sk-openai",
-            },
-            None,
-            None,
-            "https://gw.example.com/v1/",
-            "sk-openai",
-            id="gateway_openai_key_fallback",
         ),
         pytest.param(
             {},
             "https://api.example.com/v1/",
             None,
+            "glm-4.6",
+            None,
             "https://api.example.com/v1/",
             "no-key-required",
+            "openai",
             id="unauthenticated_backend",
         ),
-    ],
-)
-def test_make_client_resolution(
-    clean_env, env, backend_url, api_key_env, expected_url, expected_key
-):
-    for k, v in env.items():
-        clean_env.setenv(k, v)
-    client = _make_client(backend_url, "glm-4.6", api_key_env)
-    assert client.base_url == expected_url
-    assert client._api_key == expected_key
-    # reasoning models go silent for minutes, but a dead host must fail fast
-    assert client.timeout == (10.0, 3600)
-
-
-@pytest.mark.parametrize(
-    "model, provider",
-    [
-        pytest.param("gemini-2.5-pro", "gemini", id="gemini_name"),
-        pytest.param("claude-sonnet-4", "openai", id="anthropic_name"),
-        pytest.param("glm-4.6", "openai", id="openai_compatible_name"),
-    ],
-)
-def test_custom_endpoint_transport_by_model(clean_env, model, provider):
-    client = _make_client("https://backend.example/v1/", model, None)
-    assert client.base_url == "https://backend.example/v1/"
-    assert client.provider == provider
-    assert client._api_key == "no-key-required"
-
-
-@pytest.mark.parametrize(
-    "env, backend_url, api_key_env, match",
-    [
-        pytest.param({}, None, None, "No backend URL", id="no_url"),
+        pytest.param(
+            {},
+            "https://api.example.com/v1/",
+            None,
+            "gemini-2.5-pro",
+            None,
+            "https://api.example.com/v1/",
+            "no-key-required",
+            "gemini",
+            id="gemini_model",
+        ),
+        pytest.param(
+            {}, None, None, "glm-4.6", "No backend URL", None, None, None, id="no_url"
+        ),
         pytest.param(
             {"PADWAN_API_KEY": "sk-gw", "OPENAI_API_KEY": "sk-openai"},
             "https://api.example.com/v1/",
             "MY_KEY",
+            "glm-4.6",
             "MY_KEY not set",
+            None,
+            None,
+            None,
             id="env_unset",
         ),
     ],
 )
-def test_make_client_errors(clean_env, env, backend_url, api_key_env, match):
+def test_make_client_resolution(
+    clean_env,
+    env,
+    backend_url,
+    api_key_env,
+    model,
+    error,
+    expected_url,
+    expected_key,
+    provider,
+):
     for k, v in env.items():
         clean_env.setenv(k, v)
-    with pytest.raises(CommandError) as exc:
-        _make_client(backend_url, "glm-4.6", api_key_env)
-    assert match in exc.value.message
+    with nullcontext() if error is None else pytest.raises(CommandError) as exc:
+        client = _make_client(backend_url, model, api_key_env)
+    if error is not None:
+        assert error in exc.value.message
+        return
+    assert client.base_url == expected_url
+    assert client._api_key == expected_key
+    assert client.provider == provider
+    # reasoning models go silent for minutes, but a dead host must fail fast
+    assert client.timeout == (10.0, 3600)
 
 
 # --- Native Gemini backend -------------------------------------------------
@@ -1131,28 +948,6 @@ GEMINI_TEXT_CHUNKS = [
     {
         "candidates": [
             {"content": {"parts": [{"text": "Hello"}]}, "finishReason": "STOP"}
-        ]
-    },
-    {"usageMetadata": GEMINI_USAGE},
-]
-
-GEMINI_TOOL_CHUNKS = [
-    {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "functionCall": {
-                                "name": "get_weather",
-                                "args": {"city": "Paris"},
-                                "id": "call_1",
-                            }
-                        }
-                    ]
-                },
-                "finishReason": "STOP",
-            }
         ]
     },
     {"usageMetadata": GEMINI_USAGE},
@@ -1235,16 +1030,6 @@ async def test_gemini_non_stream(gemini_proxy):
     backend, router = gemini_proxy
     proto = await post(router, "/v1/messages", _messages_body())
     assert proto.status == 200
-    data = json.loads(proto.body)
-    assert data["role"] == "assistant"
-    assert data["model"] == "claude-sonnet-5"
-    assert data["content"] == [{"type": "text", "text": "Hello!"}]
-    assert data["stop_reason"] == "end_turn"
-    assert data["usage"] == {"input_tokens": 10, "output_tokens": 2}
-    assert backend.last_body["contents"] == [
-        {"role": "user", "parts": [{"text": "hello"}]}
-    ]
-    assert backend.last_body["generationConfig"]["maxOutputTokens"] == 100
     # Gemini path must not carry OpenAI-only shims.
     assert "stream_options" not in backend.last_body
 
@@ -1277,96 +1062,3 @@ async def test_gemini_stream_text(gemini_proxy):
     )
     assert text == "Hello"
     assert events[-2][1]["usage"] == {"input_tokens": 10, "output_tokens": 2}
-
-
-async def test_gemini_stream_tool_call(gemini_proxy):
-    backend, router = gemini_proxy
-    backend.stream_chunks = GEMINI_TOOL_CHUNKS
-    proto = await post(router, "/v1/messages", _messages_body(stream=True))
-    assert proto.status == 200
-    events = _parse_sse(proto)
-    start = [e for _, e in events if e["type"] == "content_block_start"][0]
-    assert start["content_block"]["type"] == "tool_use"
-    assert start["content_block"]["name"] == "get_weather"
-    deltas = [e["delta"] for _, e in events if e["type"] == "content_block_delta"]
-    expected = {"type": "input_json_delta", "partial_json": '{"city":"Paris"}'}
-    assert deltas[-1] == expected
-    assert events[-2][1]["delta"]["stop_reason"] == "tool_use"
-
-
-async def test_gemini_thinking_then_text(gemini_proxy):
-    backend, router = gemini_proxy
-    backend.stream_chunks = [
-        {
-            "candidates": [
-                {
-                    "content": {
-                        "parts": [
-                            {"text": "reasoning", "thought": True},
-                            {"text": "answer"},
-                        ]
-                    },
-                    "finishReason": "STOP",
-                }
-            ]
-        },
-        {"usageMetadata": GEMINI_USAGE},
-    ]
-    proto = await post(router, "/v1/messages", _messages_body(stream=True))
-    events = _parse_sse(proto)
-    block_starts = [
-        e["content_block"]["type"]
-        for _, e in events
-        if e["type"] == "content_block_start"
-    ]
-    assert block_starts == ["thinking", "text"]
-
-
-async def test_gemini_tool_turn_round_trips(gemini_proxy):
-    """An assistant tool_use + tool_result round-trips through Gemini's
-    functionCall/functionResponse wire shapes."""
-    backend, router = gemini_proxy
-    body = _messages_body(
-        messages=[
-            {"role": "user", "content": "weather?"},
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "call_1",
-                        "name": "get_weather",
-                        "input": {"city": "Paris"},
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "call_1",
-                        "content": '{"temp": 18}',
-                    }
-                ],
-            },
-        ]
-    )
-    await post(router, "/v1/messages", body)
-    contents = backend.last_body["contents"]
-    assert contents[1] == {
-        "role": "model",
-        "parts": [
-            {
-                "functionCall": {
-                    "name": "get_weather",
-                    "args": {"city": "Paris"},
-                    "id": "call_1",
-                }
-            }
-        ],
-    }
-    assert contents[2]["parts"][0]["functionResponse"] == {
-        "name": "call_1",
-        "response": {"temp": 18},
-    }

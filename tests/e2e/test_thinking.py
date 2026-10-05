@@ -35,55 +35,45 @@ def _body(model: str, *, stream: bool) -> dict[str, Any]:
     }
 
 
-def test_thinking_non_stream(live_proxy: tuple[str, Provider]) -> None:
-    base_url, provider = live_proxy
-    content_type, raw = _post(base_url, _body(provider.model, stream=False))
-    response = json.loads(raw)
-    thoughts = [
-        block["thinking"]
-        for block in response["content"]
-        if block["type"] == "thinking"
-    ]
-    answers = [
-        block["text"] for block in response["content"] if block["type"] == "text"
-    ]
-
-    assert content_type == "application/json"
-    assert "".join(thoughts).strip(), "reasoning model returned no thinking block"
-    assert "".join(answers).strip(), "reasoning model returned no final answer"
-    assert "391" in "".join(answers)
-
-
-def test_thinking_stream(live_proxy: tuple[str, Provider]) -> None:
-    base_url, provider = live_proxy
-    content_type, raw = _post(base_url, _body(provider.model, stream=True))
-    events: list[tuple[str, dict[str, Any]]] = []
+def _sse_events(raw: str) -> list[dict[str, Any]]:
+    events = []
     for block in raw.strip().split("\n\n"):
         lines = block.splitlines()
         assert len(lines) == 2
         assert lines[0].startswith("event: ")
         assert lines[1].startswith("data: ")
-        events.append(
-            (
-                lines[0].removeprefix("event: "),
-                json.loads(lines[1].removeprefix("data: ")),
-            )
+        events.append(json.loads(lines[1].removeprefix("data: ")))
+    return events
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [pytest.param(False, id="non_stream"), pytest.param(True, id="stream")],
+)
+def test_thinking(live_proxy: tuple[str, Provider], stream: bool) -> None:
+    base_url, provider = live_proxy
+    content_type, raw = _post(base_url, _body(provider.model, stream=stream))
+    if stream:
+        events = _sse_events(raw)
+        thoughts = "".join(
+            e["delta"]["thinking"]
+            for e in events
+            if e.get("delta", {}).get("type") == "thinking_delta"
         )
+        answers = "".join(
+            e["delta"]["text"]
+            for e in events
+            if e.get("delta", {}).get("type") == "text_delta"
+        )
+        assert content_type == "text/event-stream"
+        assert events[0]["type"] == "message_start"
+        assert events[-1]["type"] == "message_stop"
+    else:
+        content = json.loads(raw)["content"]
+        thoughts = "".join(b["thinking"] for b in content if b["type"] == "thinking")
+        answers = "".join(b["text"] for b in content if b["type"] == "text")
+        assert content_type == "application/json"
 
-    thoughts = "".join(
-        event["delta"]["thinking"]
-        for _, event in events
-        if event.get("delta", {}).get("type") == "thinking_delta"
-    )
-    answers = "".join(
-        event["delta"]["text"]
-        for _, event in events
-        if event.get("delta", {}).get("type") == "text_delta"
-    )
-
-    assert content_type == "text/event-stream"
-    assert events[0][0] == "message_start"
-    assert events[-1][0] == "message_stop"
-    assert thoughts.strip(), "reasoning stream returned no thinking deltas"
-    assert answers.strip(), "reasoning stream returned no final answer deltas"
+    assert thoughts.strip(), "reasoning model returned no thinking"
+    assert answers.strip(), "reasoning model returned no final answer"
     assert "391" in answers

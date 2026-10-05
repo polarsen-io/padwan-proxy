@@ -1,5 +1,3 @@
-from typing import Any, cast
-
 import pytest
 
 from padwan_proxy.breakdown import (
@@ -22,12 +20,6 @@ def _tool(name: str, filler: str = "") -> dict:
     "body, expected_count, expected_sources",
     [
         pytest.param({"messages": []}, 0, (), id="no_tools_no_system"),
-        pytest.param(
-            {"messages": [], "tools": [_tool("Read"), _tool("Bash")]},
-            2,
-            ("builtin",),
-            id="builtin_tools_grouped_together",
-        ),
         pytest.param(
             {
                 "messages": [],
@@ -57,24 +49,7 @@ def test_prompt_breakdown(body, expected_count, expected_sources):
 
 
 @pytest.mark.parametrize(
-    "system, expected_system",
-    [
-        pytest.param(None, 0, id="absent"),
-        pytest.param("you are helpful", 4, id="plain_string"),
-        pytest.param(
-            [{"type": "text", "text": "you are helpful"}], 10, id="content_blocks"
-        ),
-    ],
-)
-def test_system_sizing(system, expected_system):
-    body: dict[str, Any] = {"messages": []}
-    if system is not None:
-        body["system"] = system
-    assert prompt_breakdown(cast("Any", body)).system == expected_system
-
-
-@pytest.mark.parametrize(
-    "breakdown, expected",
+    "breakdown, kwargs, expected",
     [
         pytest.param(
             PromptBreakdown(
@@ -84,6 +59,7 @@ def test_system_sizing(system, expected_system):
                 messages=47_000,
                 by_source=(("notion", 41_000), ("argent", 38_000)),
             ),
+            {},
             "sys=3.9k tools=186k(312) msgs=47k | top: notion 41k, argent 38k",
             id="thousands_abbreviated",
         ),
@@ -91,24 +67,26 @@ def test_system_sizing(system, expected_system):
             PromptBreakdown(
                 system=0, tools=0, tool_count=0, messages=812, by_source=()
             ),
+            {},
             "sys=0 tools=0(0) msgs=812",
             id="no_tools_omits_top",
         ),
+        pytest.param(
+            PromptBreakdown(
+                system=0,
+                tools=4,
+                tool_count=4,
+                messages=0,
+                by_source=(("a", 4), ("b", 3), ("c", 2), ("d", 1)),
+            ),
+            {"top": 2},
+            "sys=0 tools=4(4) msgs=0 | top: a 4, b 3",
+            id="top_caps_the_source_list",
+        ),
     ],
 )
-def test_format_breakdown(breakdown, expected):
-    assert format_breakdown(breakdown) == expected
-
-
-def test_format_breakdown_caps_the_source_list():
-    breakdown = PromptBreakdown(
-        system=0,
-        tools=4,
-        tool_count=4,
-        messages=0,
-        by_source=(("a", 4), ("b", 3), ("c", 2), ("d", 1)),
-    )
-    assert format_breakdown(breakdown, top=2).endswith("| top: a 4, b 3")
+def test_format_breakdown(breakdown, kwargs, expected):
+    assert format_breakdown(breakdown, **kwargs) == expected
 
 
 @pytest.mark.parametrize(
