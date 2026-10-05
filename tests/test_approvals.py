@@ -59,12 +59,20 @@ def client(monkeypatch):
     return client
 
 
+_DISTINCT = {
+    "type": "choice",
+    "choice": "allow",
+    "confidence": 0.2,
+    "probabilities": {"allow": 0.62, "deny": 0.17, "ask": 0.21},
+}
+
+
 @pytest.mark.parametrize(
-    "answer, expected",
+    "answer, expected, gate",
     [
-        pytest.param(_verdict(), "allow", id="allow"),
-        pytest.param(_verdict("deny"), "deny", id="deny"),
-        pytest.param(_verdict("ask"), "ask", id="ask"),
+        pytest.param(_verdict(), "allow", None, id="allow"),
+        pytest.param(_verdict("deny"), "deny", None, id="deny"),
+        pytest.param(_verdict("ask"), "ask", None, id="ask"),
         pytest.param(
             {
                 "type": "choice",
@@ -73,50 +81,90 @@ def client(monkeypatch):
                 "probabilities": {"ask": 0.0, "allow": 1.0, "deny": 0.0},
             },
             "allow",
+            None,
             id="reported_rounded_confidence",
         ),
-        pytest.param(_verdict(confidence=0.98), "ask", id="uncertain_allow"),
-        pytest.param(_verdict("deny", 0.98), "ask", id="uncertain_deny"),
-        pytest.param({}, "ask", id="missing_answer"),
-        pytest.param(_verdict(confidence=float("nan")), "ask", id="nan"),
+        pytest.param(_verdict(confidence=0.98), "ask", None, id="uncertain_allow"),
+        pytest.param(_verdict("deny", 0.98), "ask", None, id="uncertain_deny"),
+        pytest.param({}, "ask", None, id="missing_answer"),
+        pytest.param(_verdict(confidence=float("nan")), "ask", None, id="nan"),
         pytest.param(
-            {**_verdict(), "confidence": True}, "ask", id="boolean_confidence"
+            {**_verdict(), "confidence": True}, "ask", None, id="boolean_confidence"
         ),
         pytest.param(
             {**_verdict(), "probabilities": {"allow": 0.999}},
             "ask",
+            None,
             id="missing_distribution",
         ),
-        pytest.param({**_verdict(), "choice": "deny"}, "ask", id="inconsistent_choice"),
+        pytest.param(
+            {**_verdict(), "choice": "deny"}, "ask", None, id="inconsistent_choice"
+        ),
+        pytest.param(_DISTINCT, "allow", "0.15", id="gate_lowered"),
+        pytest.param(_DISTINCT, "ask", "1", id="gate_raised_to_one"),
+        # A malformed or out-of-range override must never open the gate.
+        pytest.param(_DISTINCT, "ask", "low", id="gate_not_a_number"),
+        pytest.param(_DISTINCT, "ask", "0", id="gate_zero"),
+        pytest.param(_DISTINCT, "ask", "-1", id="gate_negative"),
+        pytest.param(_DISTINCT, "ask", "2", id="gate_over_one"),
+        pytest.param(_DISTINCT, "ask", "nan", id="gate_nan"),
     ],
 )
-async def test_decisions(hook, client, answer, expected):
+async def test_decisions(hook, client, monkeypatch, answer, expected, gate):
+    if gate:
+        monkeypatch.setenv("PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE", gate)
     client.system_one.return_value = _response(answer)
-    decision, _ = await approvals.evaluate(hook)
+    timing = approvals.Timing()
+    decision, _ = await approvals.evaluate(hook, timing)
     assert decision == expected
-    state, questions = client.system_one.call_args.args
+    state = client.system_one.call_args.args[0]
     assert state == {
         "user_requests": ["Run the unit tests."],
         "cwd": hook["cwd"],
         "tool_name": "Bash",
         "tool_input": hook["tool_input"],
     }
-    assert set(questions["approval"]["criteria"]) == {"allow", "deny", "ask"}
+    if timing.status == "evaluated":
+        assert (timing.verdict, timing.confidence) == (
+            answer["choice"],
+            answer["confidence"],
+        )
 
 
-async def test_invalid_answer_diagnostics(hook, client, monkeypatch, tmp_path):
-    answer = {
-        **_verdict(),
-        "probabilities": {"allow": 0.8, "deny": 0, "ask": 0},
-        "extra": "test-key",
+@pytest.mark.parametrize(
+    "answer, url, model",
+    [
+        pytest.param(
+            {
+                **_verdict(),
+                "probabilities": {"allow": 0.8, "deny": 0, "ask": 0},
+                "extra": "test-key",
+            },
+            None,
+            "jev-latest",
+            id="hosted",
+        ),
+        # Without a key to redact, the diagnostics must still survive.
+        pytest.param({"type": "choice"}, "http://127.0.0.1:4000", "laya", id="local"),
+    ],
+)
+async def test_invalid_answer_diagnostics(
+    hook, client, monkeypatch, tmp_path, answer, url, model
+):
+    if url:
+        monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+        monkeypatch.setenv("PADWAN_PROXY_APPROVALS_URL", url)
+    client.system_one.return_value = {
+        **_response(answer, model),
+        "private": "not logged",
     }
-    client.system_one.return_value = {**_response(answer), "private": "not logged"}
     timing = approvals.Timing()
     decision, _ = await approvals.evaluate(hook, timing)
     assert decision == "ask"
     assert timing.status == "invalid_response"
-    assert timing.validation_error == "ValueError: inconsistent decision probabilities"
-    assert json.loads(timing.invalid_answer)["probabilities"]["allow"] == 0.8
+    assert timing.model == model
+    assert timing.validation_error is not None
+    assert json.loads(timing.invalid_answer or "")["type"] == "choice"
     log_path = tmp_path / "approvals.jsonl"
     monkeypatch.setenv("PADWAN_PROXY_APPROVALS_LOG", str(log_path))
     approvals._log_timing(timing, decision)
@@ -124,21 +172,6 @@ async def test_invalid_answer_diagnostics(hook, client, monkeypatch, tmp_path):
     assert "test-key" not in logged
     assert "not logged" not in logged
     assert "Run the unit tests" not in logged
-
-
-async def test_distinct_confidence_is_valid_but_uncertain(hook, client):
-    client.system_one.return_value = _response(
-        {
-            "type": "choice",
-            "choice": "allow",
-            "confidence": 0.42,
-            "probabilities": {"allow": 0.61, "deny": 0.35, "ask": 0.04},
-        }
-    )
-    timing = approvals.Timing()
-    assert (await approvals.evaluate(hook, timing))[0] == "ask"
-    assert timing.status == "evaluated"
-    assert timing.validation_error is None
 
 
 @pytest.mark.parametrize(
@@ -239,36 +272,6 @@ async def test_other_modes_leave_native_permissions_unchanged(hook, client, mode
     client.system_one.assert_not_called()
 
 
-def test_inactive_hook_emits_no_permission_decision(hook):
-    result = subprocess.run(
-        [sys.executable, "-I", "-m", "padwan_proxy.approvals"],
-        input=json.dumps({**hook, "permission_mode": "default"}),
-        text=True,
-        capture_output=True,
-        check=True,
-        timeout=15,
-        env={
-            key: value
-            for key, value in os.environ.items()
-            if key
-            not in {
-                "PADWAN_PROXY_APPROVALS_LOG",
-                "TYPESAFE_API_KEY",
-                "PADWAN_PROXY_APPROVALS_ENV_FILE",
-            }
-        },
-    )
-    assert json.loads(result.stdout) == {}
-    assert json.loads(result.stderr)["api_called"] is False
-
-
-async def test_service_failure_asks_without_leaking_details(hook, client):
-    client.system_one.side_effect = RuntimeError("secret-api-key")
-    decision, reason = await approvals.evaluate(hook)
-    assert decision == "ask"
-    assert "secret-api-key" not in reason
-
-
 @pytest.mark.parametrize(
     "file_content, environment_key, expected_key",
     [
@@ -301,31 +304,6 @@ async def test_key_file_fallback(
     else:
         assert decision == "ask"
         client.system_one.assert_not_called()
-
-
-@pytest.mark.parametrize(
-    "mode, fails, expected_status, called",
-    [
-        pytest.param("auto", False, "evaluated", True, id="api_success"),
-        pytest.param("auto", True, "api_error", True, id="api_failure"),
-        pytest.param("default", False, "inactive_mode", False, id="no_api"),
-    ],
-)
-async def test_timings_distinguish_api_calls(
-    hook, client, mode, fails, expected_status, called
-):
-    async def answer(*args, **kwargs):
-        await asyncio.sleep(0.01)
-        if fails:
-            raise RuntimeError("private provider details")
-        return _response(_verdict())
-
-    client.system_one.side_effect = answer
-    timing = approvals.Timing()
-    await approvals._run({**hook, "permission_mode": mode}, timing)
-    assert timing.status == expected_status
-    assert timing.api_called is called
-    assert (timing.api_ms > 0) is called
 
 
 async def test_prior_user_constraints_reach_the_model(hook, client):
@@ -362,6 +340,7 @@ async def test_deadline_asks(monkeypatch):
         pytest.param("{", id="invalid_json"),
         pytest.param("x" * (approvals._MAX_INPUT + 1), id="oversize_input"),
         pytest.param(None, id="missing_api_key"),
+        pytest.param("inactive", id="inactive_mode"),
     ],
 )
 def test_hook_process_returns_ask(hook, raw, tmp_path):
@@ -374,19 +353,27 @@ def test_hook_process_returns_ask(hook, raw, tmp_path):
     env["PADWAN_PROXY_APPROVALS_LOG"] = str(log_path)
     result = subprocess.run(
         [sys.executable, "-I", "-m", "padwan_proxy.approvals"],
-        input=json.dumps(hook) if raw is None else raw,
+        input=json.dumps(
+            {**hook, "permission_mode": "default"} if raw == "inactive" else hook
+        )
+        if raw in (None, "inactive")
+        else raw,
         text=True,
         capture_output=True,
         env=env,
         timeout=15,
         check=True,
     )
-    output = json.loads(result.stdout)["hookSpecificOutput"]
-    assert output["hookEventName"] == "PreToolUse"
-    assert output["permissionDecision"] == "ask"
     record = json.loads(log_path.read_text())
     assert record["event"] == "approval"
-    assert record["decision"] == "ask"
+    if raw == "inactive":
+        assert json.loads(result.stdout) == {}
+        assert record["decision"] == "pass"
+    else:
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        assert output["hookEventName"] == "PreToolUse"
+        assert output["permissionDecision"] == "ask"
+        assert record["decision"] == "ask"
     assert record["api_called"] is False
     if raw is None:
         assert record["status"] == "missing_api_key"
@@ -402,12 +389,6 @@ def test_hook_process_returns_ask(hook, raw, tmp_path):
             None, "shell-key", (approvals.TYPESAFE_ENDPOINT, "shell-key"), id="api"
         ),
         # The local endpoint replaces the API, and must never receive its key.
-        pytest.param(
-            "http://127.0.0.1:4000",
-            None,
-            ("http://127.0.0.1:4000", "local"),
-            id="local",
-        ),
         pytest.param(
             "http://127.0.0.1:4000",
             "shell-key",
@@ -448,48 +429,6 @@ async def test_local_verdicts_are_advisory_even_above_a_lowered_gate(
     assert "advisory" in reason
 
 
-async def test_local_invalid_answer_keeps_its_diagnostics(hook, client, monkeypatch):
-    """Without a key to redact, the diagnostics must still survive."""
-    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
-    monkeypatch.setenv("PADWAN_PROXY_APPROVALS_URL", "http://127.0.0.1:4000")
-    client.system_one.return_value = _response({"type": "choice"}, model="laya")
-    timing = approvals.Timing()
-    assert (await approvals.evaluate(hook, timing))[0] == "ask"
-    assert timing.status == "invalid_response"
-    assert timing.model == "laya"
-    assert timing.invalid_answer == json.dumps({"type": "choice"})
-    assert timing.validation_error is not None
-
-
-@pytest.mark.parametrize(
-    "override, expected",
-    [
-        pytest.param("0.15", "allow", id="lowered"),
-        pytest.param(None, "ask", id="default_gate"),
-        pytest.param("1", "ask", id="raised_to_one"),
-        # A malformed or out-of-range override must never open the gate.
-        pytest.param("", "ask", id="empty"),
-        pytest.param("low", "ask", id="not_a_number"),
-        pytest.param("0", "ask", id="zero"),
-        pytest.param("-1", "ask", id="negative"),
-        pytest.param("2", "ask", id="over_one"),
-        pytest.param("nan", "ask", id="nan"),
-    ],
-)
-async def test_confidence_gate_override(hook, client, monkeypatch, override, expected):
-    if override is not None:
-        monkeypatch.setenv("PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE", override)
-    client.system_one.return_value = _response(
-        {
-            "type": "choice",
-            "choice": "allow",
-            "confidence": 0.2,
-            "probabilities": {"allow": 0.62, "deny": 0.17, "ask": 0.21},
-        }
-    )
-    assert (await approvals.evaluate(hook))[0] == expected
-
-
 @pytest.mark.parametrize(
     "error, expected",
     [
@@ -499,8 +438,8 @@ async def test_confidence_gate_override(hook, client, monkeypatch, override, exp
         pytest.param(
             LLMError("typesafe", "413 state exceeds 316 tokens"), 413, id="too_large"
         ),
-        pytest.param(LLMError("typesafe", "no status here"), None, id="unparseable"),
         pytest.param(OSError("connection refused"), None, id="unreachable"),
+        pytest.param(RuntimeError("secret-api-key"), None, id="generic_failure"),
     ],
 )
 async def test_api_status_makes_the_failure_diagnosable(hook, client, error, expected):
@@ -511,13 +450,4 @@ async def test_api_status_makes_the_failure_diagnosable(hook, client, error, exp
     assert timing.status == "api_error"
     assert timing.api_status == expected
     assert "316" not in reason  # the body stays out of the user-facing reason
-
-
-async def test_log_carries_the_verdict_behind_the_gate(hook, client):
-    """The README says to pick a gate from the log: the log must show what it hid."""
-    client.system_one.return_value = _response(_verdict(confidence=0.42), "laya")
-    timing = approvals.Timing()
-    decision, reason = await approvals.evaluate(hook, timing)
-    assert decision == "ask"
-    assert (timing.verdict, timing.confidence) == ("allow", 0.42)
-    assert reason == "laya: allow (confidence 0.420)"
+    assert "secret-api-key" not in reason

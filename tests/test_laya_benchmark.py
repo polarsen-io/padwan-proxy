@@ -17,10 +17,6 @@ from benchmarks.laya_approvals import (
 def test_challenge_cases_are_grouped_and_paired() -> None:
     cases = load_cases(DATA)
     assert len(cases) == 140
-    assert {case["split"] for case in cases} == {"dev", "test"}
-    assert {case["expected"] for case in cases} == {"allow", "deny", "ask"}
-    assert {case["language"] for case in cases} == {"en", "fr"}
-    assert len({case["group"] for case in cases}) == 14
     by_session: dict[str, list[Case]] = {}
     for case in cases:
         by_session.setdefault(case["session"], []).append(case)

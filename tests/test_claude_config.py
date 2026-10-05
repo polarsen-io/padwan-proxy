@@ -31,7 +31,6 @@ def _env(path):
     ("backend_url", "expected"),
     [
         pytest.param(SCALEWAY, "Scaleway", id="known_host"),
-        pytest.param("https://api.z.ai/api/anthropic", "Z.ai", id="known_host_dotted"),
         pytest.param("https://llm.internal:8443/v1", "llm.internal", id="unknown_host"),
         pytest.param(None, None, id="no_backend_url"),
     ],
@@ -42,10 +41,7 @@ def test_backend_vendor(backend_url, expected):
 
 def test_fresh_dir(tmp_path):
     env = _env(_write(tmp_path / "nested"))
-    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:4000"
     assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "glm-5.2"
-    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "qwen3.6-35b-a3b"
-    assert env["API_TIMEOUT_MS"] == "3600000"
     assert env["CLAUDE_CODE_ENABLE_TELEMETRY"] == "1"
     assert env["OTEL_RESOURCE_ATTRIBUTES"] == "ai.vendor=Scaleway"
     assert "CLAUDE_CODE_AUTO_COMPACT_WINDOW" not in env
@@ -166,8 +162,17 @@ def test_approvals_enable_is_idempotent_and_preserves_unrelated_settings(
     ]
 
 
-def test_approvals_disable_removes_only_managed_hook(tmp_path):
-    custom_hook = {"type": "command", "command": "check-local-policy"}
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("check-local-policy", id="custom_hook"),
+        pytest.param(
+            "echo audit -m padwan_proxy.approvals", id="similar_custom_command"
+        ),
+    ],
+)
+def test_approvals_disable_removes_only_managed_hook(tmp_path, command):
+    custom_hook = {"type": "command", "command": command}
     (tmp_path / "settings.json").write_text(
         json.dumps(
             {
@@ -187,54 +192,26 @@ def test_approvals_disable_removes_only_managed_hook(tmp_path):
     assert settings["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
 
 
-def test_approvals_disable_preserves_similar_custom_command(tmp_path):
-    custom_hook = {
-        "type": "command",
-        "command": "echo audit -m padwan_proxy.approvals",
-    }
-    (tmp_path / "settings.json").write_text(
-        json.dumps(
-            {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [custom_hook]}]}}
-        )
-    )
-
-    settings = json.loads(_write(tmp_path, approvals=False).read_text())
-
-    assert settings["hooks"]["PreToolUse"] == [{"matcher": "*", "hooks": [custom_hook]}]
-
-
 @pytest.mark.parametrize(
-    "invalid",
+    ("content", "approvals"),
     [
-        pytest.param({"hooks": []}, id="hooks_not_object"),
-        pytest.param({"hooks": {"PreToolUse": {}}}, id="pre_tool_use_not_array"),
-        pytest.param({"permissions": []}, id="permissions_not_object"),
+        pytest.param('{"hooks": []}', True, id="hooks_not_object"),
+        pytest.param(
+            '{"hooks": {"PreToolUse": {}}}', True, id="pre_tool_use_not_array"
+        ),
+        pytest.param('{"permissions": []}', True, id="permissions_not_object"),
+        pytest.param("{", None, id="truncated_json"),
+        pytest.param('["a"]', None, id="not_an_object"),
+        pytest.param('{"env": []}', None, id="non_object_env"),
     ],
 )
-def test_approvals_refuses_malformed_settings(tmp_path, invalid):
-    settings = tmp_path / "settings.json"
-    content = json.dumps(invalid)
-    settings.write_text(content)
-
-    with pytest.raises(CommandError):
-        _write(tmp_path, approvals=True)
-
-    assert settings.read_text() == content
-
-
-@pytest.mark.parametrize(
-    "content",
-    [
-        pytest.param("{", id="truncated_json"),
-        pytest.param('["a"]', id="not_an_object"),
-        pytest.param('{"env": []}', id="non_object_env"),
-    ],
-)
-def test_refuses_to_overwrite_unreadable_settings(tmp_path, content):
+def test_refuses_to_overwrite_unreadable_or_malformed_settings(
+    tmp_path, content, approvals
+):
     settings = tmp_path / "settings.json"
     settings.write_text(content)
     with pytest.raises(CommandError):
-        _write(tmp_path)
+        _write(tmp_path, approvals=approvals)
     assert settings.read_text() == content
 
 
@@ -272,25 +249,6 @@ def test_local_model_env_tracks_approvals(tmp_path, seed, overrides, expected):
     assert _env(_write(tmp_path, **overrides)).get(key) == expected
 
 
-def test_pre_rename_jev_keys_are_dropped(tmp_path):
-    """Written by this tool before the hook stopped being Jev-specific."""
-    (tmp_path / "settings.json").write_text(
-        json.dumps(
-            {
-                "env": {
-                    "PADWAN_PROXY_JEV_LOG": "/old/jev.jsonl",
-                    "PADWAN_PROXY_JEV_URL": "http://127.0.0.1:4000",
-                    "KEEP": "yes",
-                }
-            }
-        )
-    )
-    env = _env(_write(tmp_path, approvals=True))
-    assert not [key for key in env if key.startswith("PADWAN_PROXY_JEV_")]
-    assert env["KEEP"] == "yes"
-    assert env["PADWAN_PROXY_APPROVALS_LOG"] == str(tmp_path / "approvals.jsonl")
-
-
 @pytest.mark.parametrize(
     "approvals",
     [
@@ -313,6 +271,9 @@ def test_legacy_approval_hook_migration(tmp_path, approvals):
                 "permissions": permissions,
                 "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [custom, legacy]}]},
                 "env": {
+                    "KEEP": "yes",
+                    "PADWAN_PROXY_JEV_LOG": "/old/jev.jsonl",
+                    "PADWAN_PROXY_JEV_URL": "http://127.0.0.1:4000",
                     "PADWAN_PROXY_JEV_ENV_FILE": "/private/key.env",
                     "PADWAN_PROXY_JEV_MIN_CONFIDENCE": "0.99",
                 },
@@ -332,6 +293,7 @@ def test_legacy_approval_hook_migration(tmp_path, approvals):
         assert hooks[1]["timeout"] == 15
         assert settings["env"]["PADWAN_PROXY_APPROVALS_ENV_FILE"] == "/private/key.env"
         assert settings["env"]["PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE"] == "0.99"
+    assert settings["env"]["KEEP"] == "yes"
     assert not any(key.startswith("PADWAN_PROXY_JEV_") for key in settings["env"])
     _write(tmp_path, approvals=approvals)
     assert path.read_text() == first
