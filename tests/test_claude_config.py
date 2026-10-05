@@ -1,4 +1,6 @@
 import json
+import shlex
+import sys
 
 import pytest
 from piou import CommandError
@@ -114,6 +116,112 @@ def test_merges_otel_attributes(tmp_path):
     )
 
 
+def test_approvals_enable_is_idempotent_and_preserves_unrelated_settings(
+    tmp_path,
+    monkeypatch,
+):
+    env_file = tmp_path / ".env"
+    env_file.write_text("TYPESAFE_API_KEY=private-test-key\n")
+    monkeypatch.setenv("PADWAN_PROXY_APPROVALS_ENV_FILE", str(env_file))
+    custom_hook = {"type": "command", "command": "check-local-policy"}
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["Read"], "defaultMode": "auto"},
+                "hooks": {
+                    "PreToolUse": [{"matcher": "*", "hooks": [custom_hook]}],
+                    "Notification": [{"hooks": [custom_hook]}],
+                },
+                "env": {"KEEP": "yes"},
+            }
+        )
+    )
+
+    path = _write(tmp_path, approvals=True)
+    first = path.read_text()
+    settings = json.loads(first)
+    _write(tmp_path, approvals=True)
+
+    assert path.read_text() == first
+    assert settings["env"]["PADWAN_PROXY_APPROVALS_ENV_FILE"] == str(env_file)
+    assert "private-test-key" not in first
+    assert settings["permissions"] == {"allow": ["Read"], "defaultMode": "auto"}
+    assert settings["env"]["KEEP"] == "yes"
+    assert settings["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
+    assert settings["hooks"]["Notification"] == [{"hooks": [custom_hook]}]
+    assert settings["hooks"]["PreToolUse"] == [
+        {
+            "matcher": "*",
+            "hooks": [
+                custom_hook,
+                {
+                    "type": "command",
+                    "command": shlex.join(
+                        [sys.executable, "-I", "-m", "padwan_proxy.approvals"]
+                    ),
+                    "timeout": 20,
+                },
+            ],
+        }
+    ]
+
+
+def test_approvals_disable_removes_only_managed_hook(tmp_path):
+    custom_hook = {"type": "command", "command": "check-local-policy"}
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "permissions": {"allow": ["Read"], "defaultMode": "auto"},
+                "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [custom_hook]}]},
+                "env": {"KEEP": "yes"},
+            }
+        )
+    )
+    _write(tmp_path, approvals=True)
+
+    settings = json.loads(_write(tmp_path, approvals=False).read_text())
+
+    assert settings["hooks"]["PreToolUse"] == [{"matcher": "*", "hooks": [custom_hook]}]
+    assert settings["permissions"] == {"allow": ["Read"], "defaultMode": "auto"}
+    assert settings["env"]["KEEP"] == "yes"
+    assert settings["env"]["CLAUDE_CODE_AUTO_MODE_SERVER"] == "0"
+
+
+def test_approvals_disable_preserves_similar_custom_command(tmp_path):
+    custom_hook = {
+        "type": "command",
+        "command": "echo audit -m padwan_proxy.approvals",
+    }
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [custom_hook]}]}}
+        )
+    )
+
+    settings = json.loads(_write(tmp_path, approvals=False).read_text())
+
+    assert settings["hooks"]["PreToolUse"] == [{"matcher": "*", "hooks": [custom_hook]}]
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    [
+        pytest.param({"hooks": []}, id="hooks_not_object"),
+        pytest.param({"hooks": {"PreToolUse": {}}}, id="pre_tool_use_not_array"),
+        pytest.param({"permissions": []}, id="permissions_not_object"),
+    ],
+)
+def test_approvals_refuses_malformed_settings(tmp_path, invalid):
+    settings = tmp_path / "settings.json"
+    content = json.dumps(invalid)
+    settings.write_text(content)
+
+    with pytest.raises(CommandError):
+        _write(tmp_path, approvals=True)
+
+    assert settings.read_text() == content
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -128,3 +236,102 @@ def test_refuses_to_overwrite_unreadable_settings(tmp_path, content):
     with pytest.raises(CommandError):
         _write(tmp_path)
     assert settings.read_text() == content
+
+
+_URL = ("approvals_url", "http://127.0.0.1:9999", "PADWAN_PROXY_APPROVALS_URL")
+_GATE = ("approvals_confidence", 0.5, "PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE")
+
+
+@pytest.mark.parametrize(
+    "seed, overrides, expected",
+    [
+        pytest.param(
+            _URL,
+            {"approvals": True, "approvals_url": "http://127.0.0.1:4000"},
+            "http://127.0.0.1:4000",
+            id="url_local_model",
+        ),
+        # A stale URL would aim the hook at a proxy no longer serving Laya.
+        pytest.param(_URL, {"approvals": True}, None, id="url_hosted_api_clears_it"),
+        pytest.param(_URL, {"approvals": False}, None, id="url_disabled_clears_it"),
+        pytest.param(_URL, {}, "http://127.0.0.1:9999", id="url_unmanaged"),
+        pytest.param(
+            _GATE,
+            {"approvals": True, "approvals_confidence": 0.15},
+            "0.15",
+            id="gate_set",
+        ),
+        # A stale gate would keep the local threshold on the hosted model.
+        pytest.param(_GATE, {"approvals": True}, None, id="gate_cleared"),
+        pytest.param(_GATE, {}, "0.5", id="gate_untouched_when_unmanaged"),
+    ],
+)
+def test_local_model_env_tracks_approvals(tmp_path, seed, overrides, expected):
+    arg, value, key = seed
+    _write(tmp_path, approvals=True, **{arg: value})
+    assert _env(_write(tmp_path, **overrides)).get(key) == expected
+
+
+def test_pre_rename_jev_keys_are_dropped(tmp_path):
+    """Written by this tool before the hook stopped being Jev-specific."""
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "env": {
+                    "PADWAN_PROXY_JEV_LOG": "/old/jev.jsonl",
+                    "PADWAN_PROXY_JEV_URL": "http://127.0.0.1:4000",
+                    "KEEP": "yes",
+                }
+            }
+        )
+    )
+    env = _env(_write(tmp_path, approvals=True))
+    assert not [key for key in env if key.startswith("PADWAN_PROXY_JEV_")]
+    assert env["KEEP"] == "yes"
+    assert env["PADWAN_PROXY_APPROVALS_LOG"] == str(tmp_path / "approvals.jsonl")
+
+
+@pytest.mark.parametrize(
+    "approvals",
+    [
+        pytest.param(None, id="preserve"),
+        pytest.param(True, id="enable"),
+        pytest.param(False, id="disable"),
+    ],
+)
+def test_legacy_approval_hook_migration(tmp_path, approvals):
+    custom = {"type": "command", "command": "echo audit -m padwan_proxy.jev"}
+    legacy = {
+        "type": "command",
+        "command": shlex.join([sys.executable, "-I", "-m", "padwan_proxy.jev"]),
+        "timeout": 15,
+    }
+    permissions = {"allow": ["Read"], "defaultMode": "auto"}
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "permissions": permissions,
+                "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [custom, legacy]}]},
+                "env": {
+                    "PADWAN_PROXY_JEV_ENV_FILE": "/private/key.env",
+                    "PADWAN_PROXY_JEV_MIN_CONFIDENCE": "0.99",
+                },
+            }
+        )
+    )
+    path = _write(tmp_path, approvals=approvals)
+    first = path.read_text()
+    settings = json.loads(first)
+    hooks = settings["hooks"]["PreToolUse"][0]["hooks"]
+    assert hooks[0] == custom
+    assert settings["permissions"] == permissions
+    assert len(hooks) == (1 if approvals is False else 2)
+    if approvals is not False:
+        assert shlex.split(hooks[1]["command"])[-1] == "padwan_proxy.approvals"
+    if approvals is None:
+        assert hooks[1]["timeout"] == 15
+        assert settings["env"]["PADWAN_PROXY_APPROVALS_ENV_FILE"] == "/private/key.env"
+        assert settings["env"]["PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE"] == "0.99"
+    assert not any(key.startswith("PADWAN_PROXY_JEV_") for key in settings["env"])
+    _write(tmp_path, approvals=approvals)
+    assert path.read_text() == first

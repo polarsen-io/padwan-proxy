@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import re
 import socket
@@ -14,7 +15,7 @@ import msgspec
 from granian._granian import RSGIHTTPProtocol, RSGIProtocolClosed
 from gravier import AddressInUseError, Response, Router, RSGIScope, serve
 from padwan_ai._json import dumps as _json_dumps, loads as _json_loads
-from padwan_ai.anthropic.compat import messages_to_openai
+from padwan_ai.anthropic.compat import _image_source_to_part, messages_to_openai
 from padwan_ai.anthropic.events import (
     error_to_anthropic,
     response_to_anthropic,
@@ -259,22 +260,77 @@ def _pick_model(requested: str, *, model: str, small_model: str | None) -> str:
 
 def _has_images(messages: list[Any]) -> bool:
     """True if any message carries an image block, including inside tool results."""
+    return bool(_image_blocks(messages))
+
+
+_CAPTION_PROMPT = (
+    "Describe this image for an assistant that cannot see it. Transcribe all "
+    "visible text verbatim, then describe the layout, colors, UI elements, charts "
+    "and anything else notable. If there is no text, say so; never invent content."
+)
+_CAPTION_MAX_TOKENS = 1024
+# ponytail: FIFO eviction, per worker; LRU if long sessions thrash it
+_CAPTION_CACHE_SIZE = 256
+
+
+def _image_blocks(messages: list[Any]) -> list[tuple[list[Any], int]]:
+    """Locate image blocks as (list, index), including inside tool results."""
+    found: list[tuple[list[Any], int]] = []
     for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
             continue
-        for block in content:
+        for i, block in enumerate(content):
             if not isinstance(block, dict):
                 continue
             if block.get("type") == "image":
-                return True
-            if block.get("type") == "tool_result":
-                inner = block.get("content")
-                if isinstance(inner, list) and any(
-                    isinstance(b, dict) and b.get("type") == "image" for b in inner
-                ):
-                    return True
-    return False
+                found.append((content, i))
+            elif block.get("type") == "tool_result" and isinstance(
+                inner := block.get("content"), list
+            ):
+                found.extend(
+                    (inner, j)
+                    for j, b in enumerate(inner)
+                    if isinstance(b, dict) and b.get("type") == "image"
+                )
+    return found
+
+
+async def _caption_images(
+    messages: list[Any], *, client: _BackendClient, model: str, cache: dict[str, str]
+) -> int:
+    """Replace image blocks in place with vision-model captions; return how many."""
+    blocks = _image_blocks(messages)
+    keys = [
+        hashlib.sha256(_json_dumps(c[i].get("source") or {}).encode()).hexdigest()
+        for c, i in blocks
+    ]
+    todo = {k: c[i] for k, (c, i) in zip(keys, blocks) if k not in cache}
+
+    async def caption(block: dict[str, Any]) -> str:
+        part = _image_source_to_part(block.get("source") or {})
+        if part is None:
+            return "unsupported image source"
+        body = {
+            "model": model,
+            "max_tokens": _CAPTION_MAX_TOKENS,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": _CAPTION_PROMPT}, part],
+                }
+            ],
+        }
+        data, _ = await client.complete(cast(Any, body))
+        return cast(Any, data)["choices"][0]["message"].get("content") or ""
+
+    for key, text in zip(todo, await asyncio.gather(*map(caption, todo.values()))):
+        if len(cache) >= _CAPTION_CACHE_SIZE:
+            del cache[next(iter(cache))]
+        cache[key] = text
+    for key, (container, i) in zip(keys, blocks):
+        container[i] = {"type": "text", "text": f"[Image description]\n{cache[key]}"}
+    return len(blocks)
 
 
 _SESSION_RE = re.compile(r"session_([0-9a-fA-F-]{36})")
@@ -315,6 +371,7 @@ def build_router(
     model: str,
     small_model: str | None = None,
     vision_model: str | None = None,
+    vision_mode: str = "route",
     max_output_tokens: int = 16384,
     stream_retries: int = DEFAULT_STREAM_RETRIES,
     timings: bool = False,
@@ -324,6 +381,7 @@ def build_router(
 ) -> Router:
     """Build the Anthropic-compatible RSGI router over an OpenAI or Gemini client."""
     router = Router()
+    captions: dict[str, str] = {}
 
     async def _stream(
         proto: RSGIHTTPProtocol,
@@ -473,7 +531,16 @@ def build_router(
             target = _pick_model(requested_model, model=model, small_model=small_model)
             # Image-bearing requests need a multimodal backend, whatever the tier.
             if vision_model and _has_images(cast(list, body["messages"])):
-                target = vision_model
+                if vision_mode == "route":
+                    target = vision_model
+                else:
+                    captioned = await _caption_images(
+                        cast(list, body["messages"]),
+                        client=client,
+                        model=vision_model,
+                        cache=captions,
+                    )
+                    log.info("captioned %d image(s) with %s", captioned, vision_model)
             # Anthropic clients ask for large budgets (32k); backends cap lower.
             body["max_tokens"] = min(body["max_tokens"], max_output_tokens)
             gemini = is_gemini_model(target)
@@ -574,6 +641,38 @@ def build_router(
                     {"error": "questions must not be empty"},
                     status=HTTPStatus.BAD_REQUEST,
                 )
+            for question in body["questions"].values():
+                kind, criteria = question.get("type"), question.get("criteria")
+                if (
+                    not isinstance(question.get("instructions"), str)
+                    or not isinstance(kind, str)
+                    or kind not in {"choice", "score", "noul"}
+                    or (
+                        kind in {"choice", "score"}
+                        and (
+                            not isinstance(criteria, (dict, list))
+                            or not 2 <= len(criteria) <= 20
+                            or (kind == "score" and not isinstance(criteria, list))
+                            or (
+                                kind == "choice"
+                                and isinstance(criteria, list)
+                                and not all(isinstance(c, str) for c in criteria)
+                            )
+                        )
+                    )
+                    or (
+                        kind == "noul"
+                        and criteria is not None
+                        and (
+                            not isinstance(criteria, dict)
+                            or not set(criteria) <= {"true", "false"}
+                        )
+                    )
+                ):
+                    return Response(
+                        {"error": "invalid question schema or option count (2–20)"},
+                        status=HTTPStatus.BAD_REQUEST,
+                    )
             # Laya silently drops the state tail past its window, which would hide
             # the very tool call being judged: refuse instead of answering blind.
             if not laya.fits(body["state"]):
@@ -621,6 +720,14 @@ def proxy_command(
         "--vision-model",
         help="Multimodal backend model for requests carrying images",
     ),
+    vision_mode: str = Option(
+        "route",
+        "--vision-mode",
+        choices=["route", "caption"],
+        help="`route` sends image requests to --vision-model; `caption` has it "
+        "describe each image as text for the main model (for vision models "
+        "without tool calling, e.g. pixtral)",
+    ),
     api_key_env: str | None = Option(
         None,
         "--api-key-env",
@@ -651,8 +758,8 @@ def proxy_command(
         None,
         "--approvals",
         choices=["jev", "laya"],
-        help="Approve Claude Code tool calls with this model: `jev` calls the "
-        "TypeSafe API, `laya` runs locally on this proxy (needs the `laya` extra)",
+        help="Tool approval backend: `jev` calls TypeSafe; `laya` provides local "
+        "advisory verdicts and always asks (needs the `laya` extra)",
     ),
     no_approvals: bool = Option(
         False,
@@ -668,8 +775,12 @@ def proxy_command(
     approval_confidence: float | None = Option(
         None,
         "--approval-confidence",
-        help="Confidence a verdict needs to allow or deny instead of the default "
-        "0.99 (the local checkpoints report far less)",
+        help="Hosted approval confidence gate (default 0.99); Laya stays advisory",
+    ),
+    approval_subfolder: str | None = Option(
+        None,
+        "--approval-subfolder",
+        help="Laya checkpoint subfolder, e.g. multilingual or typed-decisions",
     ),
     stream_retries: int = Option(
         DEFAULT_STREAM_RETRIES,
@@ -718,6 +829,8 @@ def proxy_command(
     """
     if context_window is not None and context_window <= 0:
         raise CommandError("--context-window must be greater than zero")
+    if vision_mode == "caption" and is_gemini_model(model):
+        raise CommandError("--vision-mode caption needs an OpenAI-compatible backend")
     if approvals and no_approvals:
         raise CommandError("pass only one of --approvals or --no-approvals")
     # Jev lives entirely in the hook, so it is useless without settings to write;
@@ -731,6 +844,8 @@ def proxy_command(
         )
     if approval_model and not approvals:
         raise CommandError("--approval-model requires --approvals")
+    if approval_subfolder and approvals != "laya":
+        raise CommandError("--approval-subfolder requires --approvals laya")
     if approval_confidence is not None:
         if not approvals:
             raise CommandError("--approval-confidence requires --approvals")
@@ -774,6 +889,7 @@ def proxy_command(
         "MODEL": model,
         "SMALL_MODEL": small_model,
         "VISION_MODEL": vision_model,
+        "VISION_MODE": vision_mode,
         "API_KEY_ENV": api_key_env,
         "MAX_OUTPUT_TOKENS": str(max_output_tokens),
         "TIMEOUT": str(timeout),
@@ -785,6 +901,7 @@ def proxy_command(
         "BREAKDOWN": "1" if breakdown else "",
         "RICH": "1" if rich else "",
         "LAYA_MODEL": approval_model if local else "",
+        "LAYA_SUBFOLDER": approval_subfolder if local else "",
     }
     for key, value in env.items():
         if value:
@@ -799,13 +916,17 @@ def proxy_command(
                 "backend": resolved_backend_url or "?",
                 "model": model,
                 "small": small_model or f"{model} [dim](same)[/dim]",
-                "vision": vision_model or "[dim]none[/dim]",
+                "vision": f"{vision_model} [dim]({vision_mode})[/dim]"
+                if vision_model
+                else "[dim]none[/dim]",
                 "approvals": {
-                    # Show the gate even at its default: it is why laya only asks.
                     True: f"[green]{approval_model or approvals}[/green]"
-                    + (" [dim]local[/dim]" if local else "")
-                    + f" [dim]over {approval_confidence or DEFAULT_APPROVAL_CONFIDENCE}"
-                    + "[/dim]",
+                    + (
+                        " [dim]local advisory (always ask)[/dim]"
+                        if local
+                        else " [dim]over "
+                        f"{approval_confidence or DEFAULT_APPROVAL_CONFIDENCE}[/dim]"
+                    ),
                     False: "[dim]hook disabled[/dim]",
                     None: "[dim]hook unchanged[/dim]",
                 }[approvals_config],

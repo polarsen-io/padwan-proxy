@@ -9,21 +9,27 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "padwan-llm>=0.10.1",
+    "padwan-ai>=0.12.1",
     "piou>=0.37.0",
     "gravier>=0.1.0",
     "orjson>=3.12",
     "msgspec>=0.19",
     # --claude-config renders the client settings.json
     "jinja2>=3.1.6",
+    "python-dotenv>=1.2.3",
+    "jupyterlab>=4.6.3",
 ]
 
 [project.optional-dependencies]
 # `--trace` observability: Langfuse or OTLP export.
 trace = [
-    "padwan-llm[langfuse]>=0.10.1",
+    "padwan-ai[langfuse]>=0.11.1",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
+]
+# `--laya` local tool approvals: a Laya checkpoint instead of the TypeSafe API.
+laya = [
+    "laya>=0.3.3",
 ]
 
 [project.scripts]
@@ -49,12 +55,15 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.16.8",
     # keep the trace extra type-checkable/testable in dev
-    "padwan-llm[langfuse]>=0.10.1",
+    "padwan-ai[langfuse]>=0.11.1",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
 ]
 bump = [
     "commitizen>=4.18.1",
+]
+docs = [
+    "zensical>=0.0.67",
 ]
 
 [tool.commitizen]

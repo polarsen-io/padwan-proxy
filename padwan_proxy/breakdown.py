@@ -3,12 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from padwan_llm._json import dumps as _json_dumps
+from padwan_ai._json import dumps as _json_dumps
 
 if TYPE_CHECKING:
-    from padwan_llm.anthropic.models import MessagesBody
+    from padwan_ai.anthropic.models import MessagesBody
 
-__all__ = ("PromptBreakdown", "format_breakdown", "prompt_breakdown")
+__all__ = (
+    "PromptBreakdown",
+    "format_breakdown",
+    "format_tree",
+    "prompt_breakdown",
+)
 
 _MCP_PREFIX = "mcp__"
 _BUILTIN = "builtin"
@@ -73,3 +78,18 @@ def format_breakdown(breakdown: PromptBreakdown, *, top: int = 3) -> str:
         listed = ", ".join(f"{name} {_fmt(size)}" for name, size in sources)
         line += f" | top: {listed}"
     return line
+
+
+def format_tree(breakdown: PromptBreakdown) -> str:
+    """Multi-line variant of `format_breakdown`, listing every tool source."""
+    rows = [
+        ("├─ sys", _fmt(breakdown.system), ""),
+        ("├─ tools", _fmt(breakdown.tools), f" ({breakdown.tool_count})"),
+    ]
+    last = len(breakdown.by_source) - 1
+    for i, (name, size) in enumerate(breakdown.by_source):
+        rows.append((f"│  {'└─' if i == last else '├─'} {name}", _fmt(size), ""))
+    rows.append(("└─ msgs", _fmt(breakdown.messages), ""))
+    # one value column for every depth, so sizes stay comparable at a glance
+    width = max(len(label) for label, _, _ in rows)
+    return "\n".join(f"{label:<{width}} {v:>5}{extra}" for label, v, extra in rows)

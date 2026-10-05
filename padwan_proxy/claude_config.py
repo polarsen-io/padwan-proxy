@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
+import sys
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from jinja2 import Environment, PackageLoader
@@ -18,6 +22,7 @@ VENDORS = {
 }
 
 SETTINGS_FILE = "settings.json"
+APPROVALS_MODULE = "padwan_proxy.approvals"
 
 _env = Environment(loader=PackageLoader("padwan_proxy", "templates"), autoescape=False)
 
@@ -58,6 +63,85 @@ def _load_settings(path: Path) -> dict:
     return settings
 
 
+def _is_approval_hook(hook: dict[str, Any]) -> bool:
+    command = hook.get("command")
+    if hook.get("type") != "command" or not isinstance(command, str):
+        return False
+    try:
+        return shlex.split(command) in (
+            [sys.executable, "-I", "-m", APPROVALS_MODULE],
+            [sys.executable, "-I", "-m", "padwan_proxy.jev"],
+        )
+    except ValueError:
+        return False
+
+
+def _merge_approvals(
+    settings: dict[str, Any], *, enabled: bool | None, path: Path
+) -> dict[str, Any]:
+    hooks = settings.get("hooks", {})
+    permissions = settings.get("permissions", {})
+    if not isinstance(hooks, dict):
+        raise CommandError(f"{path} has non-object 'hooks'; refusing to overwrite it")
+    if not isinstance(permissions, dict):
+        raise CommandError(
+            f"{path} has non-object 'permissions'; refusing to overwrite it"
+        )
+
+    existing = hooks.get("PreToolUse", [])
+    if not isinstance(existing, list):
+        raise CommandError(
+            f"{path} has non-array 'hooks.PreToolUse'; refusing to overwrite it"
+        )
+    groups: list[dict[str, Any]] = []
+    target: dict[str, Any] | None = None
+    for group in existing:
+        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
+            raise CommandError(
+                f"{path} has invalid 'hooks.PreToolUse'; refusing to overwrite it"
+            )
+        commands = group["hooks"]
+        if not all(isinstance(command, dict) for command in commands):
+            raise CommandError(
+                f"{path} has invalid 'hooks.PreToolUse'; refusing to overwrite it"
+            )
+        merged = {
+            **group,
+            "hooks": [
+                {
+                    **command,
+                    "command": shlex.join(
+                        [sys.executable, "-I", "-m", APPROVALS_MODULE]
+                    ),
+                }
+                if enabled is None and _is_approval_hook(command)
+                else command
+                for command in commands
+                if enabled is None or not _is_approval_hook(command)
+            ],
+        }
+        groups.append(merged)
+        if target is None and group.get("matcher") == "*":
+            target = merged
+
+    if enabled:
+        if target is None:
+            target = {"matcher": "*", "hooks": []}
+            groups.append(target)
+        target["hooks"].append(
+            {
+                "type": "command",
+                "command": shlex.join([sys.executable, "-I", "-m", APPROVALS_MODULE]),
+                "timeout": 20,
+            }
+        )
+
+    merged_settings = dict(settings)
+    if enabled or "PreToolUse" in hooks:
+        merged_settings["hooks"] = {**hooks, "PreToolUse": groups}
+    return merged_settings
+
+
 def write_claude_config(
     config_dir: Path,
     *,
@@ -68,6 +152,10 @@ def write_claude_config(
     backend_url: str | None,
     timeout: float,
     context_window: int | None = None,
+    approvals: bool | None = None,
+    approvals_url: str | None = None,
+    approvals_model: str | None = None,
+    approvals_confidence: float | None = None,
 ) -> Path:
     """Write the env this proxy owns into `config_dir/settings.json`, keeping the rest.
 
@@ -93,7 +181,43 @@ def write_claude_config(
             ),
         )
     )
+    if approvals is True:
+        owned["CLAUDE_CODE_AUTO_MODE_SERVER"] = "0"
+        owned["PADWAN_PROXY_APPROVALS_LOG"] = str(
+            config_dir.resolve() / "approvals.jsonl"
+        )
+        if env_file := os.environ.get("PADWAN_PROXY_APPROVALS_ENV_FILE"):
+            owned["PADWAN_PROXY_APPROVALS_ENV_FILE"] = str(
+                Path(env_file).expanduser().resolve()
+            )
+        if approvals_url:
+            owned["PADWAN_PROXY_APPROVALS_URL"] = approvals_url
+        if approvals_model:
+            owned["PADWAN_PROXY_APPROVALS_MODEL"] = approvals_model
+        if approvals_confidence is not None:
+            owned["PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE"] = str(approvals_confidence)
+    settings = _merge_approvals(settings, enabled=approvals, path=path)
+
+    merged_env = {**env, **owned}
+    for key in list(merged_env):
+        if key.startswith("PADWAN_PROXY_JEV_"):
+            value = merged_env.pop(key)
+            if approvals is None:
+                merged_env.setdefault(
+                    key.replace("PADWAN_PROXY_JEV_", "PADWAN_PROXY_APPROVALS_", 1),
+                    value,
+                )
+    if approvals is not None:
+        # Stale keys would aim the hook at the previous backend: a URL at a proxy no
+        # longer serving a local model, a gate or model name at the wrong one.
+        for key in (
+            "PADWAN_PROXY_APPROVALS_URL",
+            "PADWAN_PROXY_APPROVALS_MODEL",
+            "PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE",
+        ):
+            if key not in owned:
+                merged_env.pop(key, None)
 
     config_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({**settings, "env": {**env, **owned}}, indent=2) + "\n")
+    path.write_text(json.dumps({**settings, "env": merged_env}, indent=2) + "\n")
     return path

@@ -9,6 +9,11 @@ default:
 test *args:
     uv run pytest {{ args }}
 
+# Evaluate cached Laya checkpoints on synthetic approval cases
+[group('dev')]
+benchmark-laya *args:
+    uv run --extra laya python -m benchmarks.laya_approvals {{ args }}
+
 # Run live reasoning tests with keys loaded from an env file
 [group('dev')]
 e2e env=".env" *args:
@@ -43,7 +48,12 @@ ci: lint check test
 # Build the docker image
 [group('docker')]
 build tag='padwan-proxy:latest':
-    docker buildx build -t {{ tag }} .
+    docker buildx build --load -t {{ tag }} .
+
+# Build the docker image with the local Laya approval model (CUDA torch, multi-GB)
+[group('docker')]
+build-laya tag='padwan-proxy:laya':
+    docker buildx build --load --build-arg LAYA=1 -t {{ tag }} .
 
 # Point gravier at a local checkout to hack on it
 [group('dev')]

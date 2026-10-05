@@ -16,7 +16,7 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
 from opentelemetry.proto.common.v1.common_pb2 import AnyValue, KeyValue
 from opentelemetry.proto.metrics.v1.metrics_pb2 import HistogramDataPoint
 from opentelemetry.proto.trace.v1.trace_pb2 import Span, Status
-from padwan_llm import otel
+from padwan_ai import otel
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import Response
