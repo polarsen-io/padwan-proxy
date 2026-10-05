@@ -1,0 +1,20 @@
+/* Custom teal palette — wired to Zensical via primary="custom" / accent="custom" in zensical.toml */
+
+:root {
+  --md-primary-fg-color: #1A8B9E;
+  --md-primary-fg-color--light: #4FD1C5;
+  --md-primary-fg-color--dark: #14707F;
+  --md-accent-fg-color: #4FD1C5;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #1A8B9E;
+  --md-primary-fg-color--light: #4FD1C5;
+  --md-primary-fg-color--dark: #14707F;
+  --md-accent-fg-color: #4FD1C5;
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background-color: #1A8B9E;
+}
+
