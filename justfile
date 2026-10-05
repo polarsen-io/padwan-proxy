@@ -69,3 +69,13 @@ gravier-pypi:
 [group('release')]
 bump *args:
     uv run --group bump cz bump {{ args }}
+
+# Serve docs locally with hot reload
+[group('docs')]
+docs:
+    uv run --group docs zensical serve -f zensical.toml
+
+# Build docs
+[group('docs')]
+docs-build:
+    uv run --group docs zensical build -f zensical.toml
