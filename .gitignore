@@ -10,3 +10,4 @@ dist/
 .claude/
 .env
 site/
+benchmarks/data/

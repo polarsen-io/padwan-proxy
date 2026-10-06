@@ -14,6 +14,7 @@ from benchmarks.laya_approvals import (
 )
 
 
+@pytest.mark.skipif(not DATA.exists(), reason="benchmark dataset is not versioned")
 def test_challenge_cases_are_grouped_and_paired() -> None:
     cases = load_cases(DATA)
     assert len(cases) == 140
