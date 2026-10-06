@@ -3,10 +3,10 @@ import os
 from unittest.mock import Mock, patch
 
 import pytest
-from padwan_ai.client import PADWAN_BASE_URL_ENV
 from piou import Cli
 
 from padwan_proxy import proxy
+from padwan_proxy.defaults import PADWAN_BASE_URL_ENV
 
 
 @pytest.fixture(autouse=True)

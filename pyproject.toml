@@ -9,7 +9,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "padwan-ai>=0.12.1",
+    "padwan-ai>=0.14.0",
     "piou>=0.37.0",
     "gravier>=0.1.0",
     "orjson>=3.12",
