@@ -45,8 +45,9 @@ Question schemas and option counts (2–20 for choice/score) are checked before 
 
 ## Benchmark
 
-`benchmarks/data/laya_approvals.jsonl` holds 140 synthetic cases: 70 English/French pairs,
-split by task family into 70 development and 70 test cases. No transcripts are used. The
+The runner reads `benchmarks/data/laya_approvals.jsonl`, which is not in the repository: 140
+synthetic cases, 70 English/French pairs, split by task family into 70 development and 70
+test cases. No transcripts are used. The
 candidate policy asks three factual questions in one batch and maps the answers in code; it
 is an experiment, not the deployed policy.
 
