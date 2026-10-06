@@ -21,15 +21,8 @@ from padwan_ai.anthropic.events import (
     response_to_anthropic,
     stream_to_anthropic,
 )
-from padwan_ai.anthropic.gemini_compat import (
-    gemini_response_to_anthropic,
-    gemini_stream_to_anthropic,
-    messages_to_gemini,
-)
 from padwan_ai.anthropic.models import AnthropicCompatBody
-from padwan_ai.client import PADWAN_API_KEY_ENV, PADWAN_BASE_URL_ENV
 from padwan_ai.errors import LLMError, QuotaExceededError, TooManyRequestsError
-from padwan_ai.gemini.client import GeminiClient, is_gemini_model
 from padwan_ai.openai.client import OpenAIClient, _OpenAIBase
 from piou import CommandError, Option
 
@@ -41,6 +34,8 @@ from .defaults import (
     DEFAULT_STREAM_RETRIES,
     DEFAULT_TIMEOUT,
     ENV_PREFIX,
+    PADWAN_API_KEY_ENV,
+    PADWAN_BASE_URL_ENV,
 )
 from .logs import log, log_request, route, timing_detail
 from .systemone import Laya, SystemOneRequest
@@ -65,10 +60,6 @@ SSE_HEADERS = [
 _RETRY_BACKOFF = 0.5
 
 _CONNECT_TIMEOUT = 10.0
-
-# Either OpenAI-compatible or the native Gemini client; both share
-# complete()/stream() returning provider-native bodies.
-_BackendClient = _OpenAIBase | GeminiClient
 
 
 def _port_answers(host: str, port: int) -> bool:
@@ -206,13 +197,8 @@ def _make_client(
     model: str,
     api_key_env: str | None,
     timeout: float = DEFAULT_TIMEOUT,
-) -> _BackendClient:
-    """Build the backend client with explicit, Padwan, then OpenAI key precedence.
-
-    Native Gemini models (name starts with `gemini`) get the GeminiClient,
-    which speaks Gemini's REST API; everything else uses the OpenAI-compatible
-    client pointed at the configured backend URL.
-    """
+) -> _OpenAIBase:
+    """Build the backend client with explicit, Padwan, then OpenAI key precedence."""
     backend_url = backend_url or os.environ.get(PADWAN_BASE_URL_ENV)
     if not backend_url:
         raise CommandError(
@@ -238,8 +224,6 @@ def _make_client(
         # reasoning model must not also let a dead host hang that long.
         "timeout": cast(float, (_CONNECT_TIMEOUT, timeout)),
     }
-    if is_gemini_model(model):
-        return GeminiClient(**client_kwargs)
     return OpenAIClient(**client_kwargs)
 
 
@@ -296,7 +280,7 @@ def _image_blocks(messages: list[Any]) -> list[tuple[list[Any], int]]:
 
 
 async def _caption_images(
-    messages: list[Any], *, client: _BackendClient, model: str, cache: dict[str, str]
+    messages: list[Any], *, client: _OpenAIBase, model: str, cache: dict[str, str]
 ) -> int:
     """Replace image blocks in place with vision-model captions; return how many."""
     blocks = _image_blocks(messages)
@@ -368,7 +352,7 @@ def _tool_names(content: list[Any]) -> list[str]:
 
 def build_router(
     *,
-    client: _BackendClient,
+    client: _OpenAIBase,
     model: str,
     small_model: str | None = None,
     vision_model: str | None = None,
@@ -380,7 +364,7 @@ def build_router(
     rich: bool = False,
     laya: Laya | None = None,
 ) -> Router:
-    """Build the Anthropic-compatible RSGI router over an OpenAI or Gemini client."""
+    """Build the Anthropic-compatible RSGI router over an OpenAI-compatible client."""
     router = Router()
     captions: dict[str, str] = {}
 
@@ -392,7 +376,6 @@ def build_router(
         req_xlate: float,
         detail: str,
         session: str | None,
-        gemini: bool,
     ) -> None:
         # Client disconnect mid-stream closes the transport; expected, not a fault.
         try:
@@ -404,7 +387,6 @@ def build_router(
                 req_xlate,
                 detail,
                 session,
-                gemini,
             )
         except RSGIProtocolClosed:
             log.info("%s | client disconnected", route(requested_model, target_model))
@@ -417,14 +399,11 @@ def build_router(
         req_xlate: float,
         detail: str,
         session: str | None,
-        gemini: bool,
     ) -> None:
         start = time.monotonic()
         backend_wait = [0.0]
-        # Without this OpenAI-compatible backends omit usage from the final chunk;
-        # Gemini includes usageMetadata regardless, so the option is skipped there.
-        if not gemini:
-            request_body.setdefault("stream_options", {"include_usage": True})
+        # Without this OpenAI-compatible backends omit usage from the final chunk.
+        request_body.setdefault("stream_options", {"include_usage": True})
         transport = proto.response_stream(200, SSE_HEADERS)
         sent = False
         attempt = 0
@@ -435,19 +414,11 @@ def build_router(
             tools_called: list[str] = []
             first_chunk = [False]
             try:
-                chunks: AsyncIterator[Any] = client.stream(
-                    cast(Any, request_body),
-                    **({"model": target_model} if gemini else {}),
-                )
+                chunks: AsyncIterator[Any] = client.stream(cast(Any, request_body))
                 if timings:
                     chunks = _timed_chunks(chunks, backend_wait)
-                # Gemini chunks have no `choices`, so normalization is a no-op there.
                 prepared = _prepare_chunks(chunks, first_chunk)
-                events = (
-                    gemini_stream_to_anthropic(prepared, model=requested_model)
-                    if gemini
-                    else stream_to_anthropic(prepared, model=requested_model)
-                )
+                events = stream_to_anthropic(prepared, model=requested_model)
                 # message_start is emitted before any backend I/O; hold frames
                 # until the backend produced a chunk so a failed attempt stays
                 # un-sent — and therefore replayable.
@@ -539,13 +510,8 @@ def build_router(
                     log.info("captioned %d image(s) with %s", captioned, vision_model)
             # Anthropic clients ask for large budgets (32k); backends cap lower.
             body["max_tokens"] = min(body["max_tokens"], max_output_tokens)
-            gemini = is_gemini_model(target)
             xlate_start = time.perf_counter()
-            backend_body = (
-                messages_to_gemini(body, model=target)
-                if gemini
-                else cast("dict[str, Any]", _translate_body(body, model=target))
-            )
+            backend_body = cast("dict[str, Any]", _translate_body(body, model=target))
             req_xlate = time.perf_counter() - xlate_start
             fmt = format_tree if rich else format_breakdown
             detail = fmt(prompt_breakdown(body)) if breakdown else ""
@@ -568,15 +534,12 @@ def build_router(
                     req_xlate,
                     detail,
                     session,
-                    gemini,
                 )
             return None
         start = time.monotonic()
         try:
             with session_context(session):
-                data, _ = await client.complete(
-                    cast(Any, backend_body), **({"model": target} if gemini else {})
-                )
+                data, _ = await client.complete(cast(Any, backend_body))
         except Exception as e:
             log.warning(
                 "%s | request failed after %.2fs: %s",
@@ -589,13 +552,8 @@ def build_router(
             status, error_body = error_to_anthropic(e)
             return Response(error_body, status=status)
         backend_s = time.monotonic() - start
-        if not gemini:
-            _normalize_reasoning(cast("dict[str, Any]", data))
-        resp = (
-            gemini_response_to_anthropic(cast(Any, data), model=requested_model)
-            if gemini
-            else response_to_anthropic(cast(Any, data), model=requested_model)
-        )
+        _normalize_reasoning(cast("dict[str, Any]", data))
+        resp = response_to_anthropic(cast(Any, data), model=requested_model)
         elapsed = time.monotonic() - start + req_xlate
         log_request(
             requested_model,
@@ -827,8 +785,6 @@ def proxy_command(
     """
     if context_window is not None and context_window <= 0:
         raise CommandError("--context-window must be greater than zero")
-    if vision_mode == "caption" and is_gemini_model(model):
-        raise CommandError("--vision-mode caption needs an OpenAI-compatible backend")
     if approvals and no_approvals:
         raise CommandError("pass only one of --approvals or --no-approvals")
     # Jev lives entirely in the hook, so it is useless without settings to write;

@@ -18,7 +18,7 @@ CLAUDE_CONFIG_DIR=~/.claude-mybackend claude
 
 Or without writing a config: `ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=dummy claude`.
 
-**Documentation: <https://polarsen-io.github.io/padwan-proxy>** — routing, Gemini, Docker
+**Documentation: <https://polarsen-io.github.io/padwan-proxy>** — routing, Docker
 (`ghcr.io/polarsen-io/padwan-proxy`), tracing, tool approvals, and the full option reference.
 
 ## Development

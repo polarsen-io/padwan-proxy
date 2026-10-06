@@ -10,7 +10,6 @@ import pytest
 import uvicorn
 from granian._granian import RSGIProtocolClosed
 from gravier.testing import FakeProto, FakeScope
-from padwan_ai.gemini.client import GeminiClient
 from padwan_ai.openai.client import OpenAIClient
 from piou import CommandError
 from starlette.applications import Starlette
@@ -819,7 +818,7 @@ def clean_env(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "env, backend_url, api_key_env, model, error, expected_url, expected_key, provider",
+    "env, backend_url, api_key_env, error, expected_url, expected_key",
     [
         pytest.param(
             {
@@ -829,22 +828,18 @@ def clean_env(monkeypatch):
             },
             "https://api.example.com/v1/",
             "MY_KEY",
-            "glm-4.6",
             None,
             "https://api.example.com/v1/",
             "sk-explicit",
-            "openai",
             id="explicit_env_var",
         ),
         pytest.param(
             {"PADWAN_API_KEY": "sk-gw", "OPENAI_API_KEY": "sk-openai"},
             "https://api.example.com/v1/",
             None,
-            "glm-4.6",
             None,
             "https://api.example.com/v1/",
             "sk-gw",
-            "openai",
             id="padwan_key_preferred_over_openai",
         ),
         pytest.param(
@@ -854,56 +849,35 @@ def clean_env(monkeypatch):
             },
             None,
             None,
-            "glm-4.6",
             None,
             "https://gw.example.com/v1/",
             "sk-gw",
-            "openai",
             id="gateway_url_fallback",
         ),
         pytest.param(
             {"OPENAI_API_KEY": "sk-openai"},
             "https://api.example.com/v1/",
             None,
-            "glm-4.6",
             None,
             "https://api.example.com/v1/",
             "sk-openai",
-            "openai",
             id="openai_key_fallback",
         ),
         pytest.param(
             {},
             "https://api.example.com/v1/",
             None,
-            "glm-4.6",
             None,
             "https://api.example.com/v1/",
             "no-key-required",
-            "openai",
             id="unauthenticated_backend",
         ),
-        pytest.param(
-            {},
-            "https://api.example.com/v1/",
-            None,
-            "gemini-2.5-pro",
-            None,
-            "https://api.example.com/v1/",
-            "no-key-required",
-            "gemini",
-            id="gemini_model",
-        ),
-        pytest.param(
-            {}, None, None, "glm-4.6", "No backend URL", None, None, None, id="no_url"
-        ),
+        pytest.param({}, None, None, "No backend URL", None, None, id="no_url"),
         pytest.param(
             {"PADWAN_API_KEY": "sk-gw", "OPENAI_API_KEY": "sk-openai"},
             "https://api.example.com/v1/",
             "MY_KEY",
-            "glm-4.6",
             "MY_KEY not set",
-            None,
             None,
             None,
             id="env_unset",
@@ -915,150 +889,18 @@ def test_make_client_resolution(
     env,
     backend_url,
     api_key_env,
-    model,
     error,
     expected_url,
     expected_key,
-    provider,
 ):
     for k, v in env.items():
         clean_env.setenv(k, v)
     with nullcontext() if error is None else pytest.raises(CommandError) as exc:
-        client = _make_client(backend_url, model, api_key_env)
+        client = _make_client(backend_url, "glm-4.6", api_key_env)
     if error is not None:
         assert error in exc.value.message
         return
     assert client.base_url == expected_url
     assert client._api_key == expected_key
-    assert client.provider == provider
     # reasoning models go silent for minutes, but a dead host must fail fast
     assert client.timeout == (10.0, 3600)
-
-
-# --- Native Gemini backend -------------------------------------------------
-
-
-GEMINI_USAGE = {
-    "promptTokenCount": 10,
-    "candidatesTokenCount": 2,
-    "totalTokenCount": 12,
-}
-
-GEMINI_TEXT_CHUNKS = [
-    {
-        "candidates": [
-            {"content": {"parts": [{"text": "Hello"}]}, "finishReason": "STOP"}
-        ]
-    },
-    {"usageMetadata": GEMINI_USAGE},
-]
-
-GEMINI_COMPLETION = {
-    "candidates": [
-        {"content": {"parts": [{"text": "Hello!"}]}, "finishReason": "STOP"}
-    ],
-    "usageMetadata": GEMINI_USAGE,
-}
-
-
-class FakeGeminiBackend:
-    """Native Gemini :generateContent / :streamGenerateContent stub."""
-
-    def __init__(self) -> None:
-        self.last_body: dict[str, Any] | None = None
-        self.last_model: str | None = None
-        self.stream_chunks: list[dict[str, Any]] = GEMINI_TEXT_CHUNKS
-        self.completion: dict[str, Any] = GEMINI_COMPLETION
-
-    def app(self) -> Starlette:
-        async def generate(request: Request) -> Response:
-            self.last_body = cast("dict[str, Any]", await request.json())
-            self.last_model = request.path_params["model"]
-            return JSONResponse(self.completion)
-
-        async def stream_generate(request: Request) -> Response:
-            self.last_body = cast("dict[str, Any]", await request.json())
-            self.last_model = request.path_params["model"]
-            lines = [f"data: {json.dumps(chunk)}\n\n" for chunk in self.stream_chunks]
-
-            async def _gen():
-                for line in lines:
-                    yield line
-
-            return StreamingResponse(_gen(), media_type="text/event-stream")
-
-        return Starlette(
-            routes=[
-                Route(
-                    "/models/{model}:generateContent",
-                    generate,
-                    methods=["POST"],
-                ),
-                Route(
-                    "/models/{model}:streamGenerateContent",
-                    stream_generate,
-                    methods=["POST"],
-                ),
-            ]
-        )
-
-
-@pytest.fixture
-async def gemini_proxy(request):
-    """A proxy backed by a native GeminiClient pointed at FakeGeminiBackend."""
-    backend = FakeGeminiBackend()
-    backend_server, backend_task, backend_port = await _serve(backend.app())
-    client = GeminiClient(
-        model="gemini-2.5-flash",
-        base_url=f"http://127.0.0.1:{backend_port}/",
-        api_key="test-key",
-        timeout=cast(float, (10.0, 3600.0)),
-    )
-    async with client:
-        router = build_router(
-            client=client,
-            model="gemini-2.5-flash",
-            small_model="gemini-2.5-flash-lite",
-            **getattr(request, "param", {}),
-        )
-        yield backend, router
-    backend_server.should_exit = True
-    await backend_task
-
-
-async def test_gemini_non_stream(gemini_proxy):
-    backend, router = gemini_proxy
-    proto = await post(router, "/v1/messages", _messages_body())
-    assert proto.status == 200
-    # Gemini path must not carry OpenAI-only shims.
-    assert "stream_options" not in backend.last_body
-
-
-@pytest.mark.parametrize(
-    "stream", [pytest.param(False, id="complete"), pytest.param(True, id="stream")]
-)
-async def test_gemini_routes_small_model(gemini_proxy, stream):
-    backend, router = gemini_proxy
-    body = _messages_body(model="claude-haiku-4-5", stream=stream)
-    await post(router, "/v1/messages", body)
-    assert backend.last_model == "gemini-2.5-flash-lite"
-
-
-async def test_gemini_stream_text(gemini_proxy):
-    backend, router = gemini_proxy
-    proto = await post(router, "/v1/messages", _messages_body(stream=True))
-    assert proto.status == 200
-    events = _parse_sse(proto)
-    assert [name for name, _ in events] == [
-        "message_start",
-        "content_block_start",
-        "content_block_delta",
-        "content_block_stop",
-        "message_delta",
-        "message_stop",
-    ]
-    text = "".join(
-        e["delta"]["text"] for _, e in events if e["type"] == "content_block_delta"
-    )
-    assert text == "Hello"
-    assert events[-2][1]["usage"] == {"input_tokens": 10, "output_tokens": 2}
