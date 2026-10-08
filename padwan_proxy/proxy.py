@@ -124,17 +124,6 @@ async def _timed_chunks(
         yield chunk
 
 
-def _normalize_reasoning(data: dict[str, Any]) -> None:
-    """Expose Scaleway's reasoning alias to the Anthropic translator."""
-    for choice in data.get("choices") or []:
-        for key in ("message", "delta"):
-            message = choice.get(key)
-            if isinstance(message, dict) and "reasoning_content" not in message:
-                reasoning = message.get("reasoning")
-                if isinstance(reasoning, str) and reasoning:
-                    message["reasoning_content"] = reasoning
-
-
 def _validate_body(body: AnthropicCompatBody) -> None:
     """Validate Claude Code's inline system extension without changing the request."""
     projection = body
@@ -182,12 +171,11 @@ def _translate_body(
     return translated
 
 
-async def _prepare_chunks(
+async def _mark_first(
     chunks: AsyncIterator[Any], seen: list[bool]
 ) -> AsyncIterator[Any]:
-    """Normalize reasoning fields and mark the first backend chunk."""
+    """Pass chunks through, flagging that the backend produced one."""
     async for chunk in chunks:
-        _normalize_reasoning(chunk)
         seen[0] = True
         yield chunk
 
@@ -376,10 +364,10 @@ def build_router(
         req_xlate: float,
         detail: str,
         session: str | None,
-    ) -> None:
+    ) -> Response | None:
         # Client disconnect mid-stream closes the transport; expected, not a fault.
         try:
-            await _stream_body(
+            return await _stream_body(
                 proto,
                 request_body,
                 requested_model,
@@ -390,6 +378,7 @@ def build_router(
             )
         except RSGIProtocolClosed:
             log.info("%s | client disconnected", route(requested_model, target_model))
+            return None
 
     async def _stream_body(
         proto: RSGIHTTPProtocol,
@@ -399,13 +388,14 @@ def build_router(
         req_xlate: float,
         detail: str,
         session: str | None,
-    ) -> None:
+    ) -> Response | None:
         start = time.monotonic()
         backend_wait = [0.0]
         # Without this OpenAI-compatible backends omit usage from the final chunk.
         request_body.setdefault("stream_options", {"include_usage": True})
-        transport = proto.response_stream(200, SSE_HEADERS)
-        sent = False
+        # Opened on the first backend chunk: an earlier failure still gets a real
+        # HTTP status, which Anthropic clients retry on.
+        transport = None
         attempt = 0
         while True:
             attempt_start = time.monotonic()
@@ -417,8 +407,9 @@ def build_router(
                 chunks: AsyncIterator[Any] = client.stream(cast(Any, request_body))
                 if timings:
                     chunks = _timed_chunks(chunks, backend_wait)
-                prepared = _prepare_chunks(chunks, first_chunk)
-                events = stream_to_anthropic(prepared, model=requested_model)
+                events = stream_to_anthropic(
+                    _mark_first(chunks, first_chunk), model=requested_model
+                )
                 # message_start is emitted before any backend I/O; hold frames
                 # until the backend produced a chunk so a failed attempt stays
                 # un-sent — and therefore replayable.
@@ -434,17 +425,21 @@ def build_router(
                     if not first_chunk[0]:
                         held.append(_sse(name, payload))
                         continue
-                    sent = True
+                    if transport is None:
+                        transport = proto.response_stream(200, SSE_HEADERS)
                     for frame in held:
                         await transport.send_str(frame)
                     held.clear()
                     await transport.send_str(_sse(name, payload))
-                for frame in held:  # backend closed without emitting any chunk
+                if transport is None:  # backend closed without emitting any chunk
+                    transport = proto.response_stream(200, SSE_HEADERS)
+                for frame in held:
                     await transport.send_str(frame)
                 break
             except RSGIProtocolClosed:  # client gone: don't retry, don't report in-band
                 raise
-            except Exception as e:  # error mid-stream: report in-band, Anthropic style
+            except Exception as e:
+                sent = transport is not None
                 if sent or attempt >= stream_retries or not _retryable_stream_error(e):
                     log.warning(
                         "%s | stream failed after %.2fs: %s",
@@ -454,9 +449,12 @@ def build_router(
                         time.monotonic() - start,
                         _error_detail(e),
                     )
-                    _, body = error_to_anthropic(e)
+                    status, body = error_to_anthropic(e)
+                    if transport is None:
+                        return Response(body, status=status)
+                    # error mid-stream: report in-band, Anthropic style
                     await transport.send_str(_sse("error", body))
-                    return
+                    return None
                 attempt += 1
                 log.warning(
                     "%s | stream attempt %d failed after %.2fs: %s — retrying",
@@ -483,6 +481,7 @@ def build_router(
             breakdown=detail,
             session=session,
         )
+        return None
 
     @router.post("/v1/messages")
     async def messages(scope: RSGIScope, proto: RSGIHTTPProtocol) -> Response | None:
@@ -526,7 +525,7 @@ def build_router(
             )
         if body.get("stream"):
             with session_context(session):
-                await _stream(
+                return await _stream(
                     proto,
                     cast("dict[str, Any]", backend_body),
                     requested_model,
@@ -535,7 +534,6 @@ def build_router(
                     detail,
                     session,
                 )
-            return None
         start = time.monotonic()
         try:
             with session_context(session):
@@ -552,7 +550,6 @@ def build_router(
             status, error_body = error_to_anthropic(e)
             return Response(error_body, status=status)
         backend_s = time.monotonic() - start
-        _normalize_reasoning(cast("dict[str, Any]", data))
         resp = response_to_anthropic(cast(Any, data), model=requested_model)
         elapsed = time.monotonic() - start + req_xlate
         log_request(
