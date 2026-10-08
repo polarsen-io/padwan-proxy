@@ -1,0 +1,27 @@
+# HOST_UID=$(id -u) HOST_GID=$(id -g) docker compose up -d   (backend settings in .env)
+services:
+  padwan-proxy:
+    image: ghcr.io/polarsen-io/padwan-proxy:latest
+    build: .
+    # Own the written settings.json as the host user
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    ports:
+      - "127.0.0.1:${PADWAN_PORT:-4000}:${PADWAN_PORT:-4000}"
+    environment:
+      - PADWAN_API_KEY
+      - PADWAN_BASE_URL
+    # Same path inside and out, so --claude-config writes the host's config dir
+    volumes:
+      - ${HOME}/.claude-padwan:${HOME}/.claude-padwan
+    command:
+      - -m
+      - ${PADWAN_MODEL:?set PADWAN_MODEL}
+      - --small-model
+      - ${PADWAN_SMALL_MODEL:-${PADWAN_MODEL}}
+      - --port
+      - ${PADWAN_PORT:-4000}
+      - --context-window
+      - ${PADWAN_CONTEXT_WINDOW:-200000}
+      - --claude-config
+      - ${HOME}/.claude-padwan
+    restart: unless-stopped
