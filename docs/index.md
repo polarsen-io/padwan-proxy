@@ -6,6 +6,8 @@ It is built on [`padwan-ai`](https://github.com/polarsen-io/padwan-ai)'s Anthrop
 translation layer and served by [granian](https://github.com/emmett-framework/granian) (RSGI)
 via [gravier](https://github.com/Andarius/gravier).
 
+![Claude Code running GLM 5.2 on Scaleway through padwan-proxy](static/demo.gif)
+
 **Prerequisites:** Python 3.13+ with [uv](https://docs.astral.sh/uv/), and an API key for an
 OpenAI-compatible backend that supports function calling.
 
@@ -22,6 +24,14 @@ OpenAI-compatible backend that supports function calling.
     ```bash
     uvx padwan-proxy --backend-url https://api.example.com/v1/ \
       -m my-model --small-model my-small-model
+    ```
+
+    Or with [Docker](docker.md):
+
+    ```bash
+    docker run --rm -p 4000:4000 -e PADWAN_API_KEY \
+      ghcr.io/polarsen-io/padwan-proxy:latest \
+      --backend-url https://api.example.com/v1/ -m my-model --small-model my-small-model
     ```
 
 3. Point the client at it:

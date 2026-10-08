@@ -1,3 +1,7 @@
+---
+icon: lucide/sliders-horizontal
+---
+
 # Options
 
 `padwan-proxy --help` is the canonical list. This page adds the behavior behind each option.
@@ -14,7 +18,7 @@
 | `--vision-mode` | `route` | `route` or `caption`. See [Routing](routing.md). |
 | `--max-output-tokens` | `16384` | Cap on `max_tokens` forwarded to the backend. Anthropic clients ask for more than many backends allow. |
 | `--timeout` | `3600` s | Read timeout per gap in the stream, not per request: reasoning models can stay silent for minutes before the first token. The connect timeout stays at 10 s. |
-| `--stream-retries` | `1` | Replays of a stream that fails before any event reached the client. Nothing is replayed once the client has seen output; 4xx, rate-limit and quota errors are never retried. |
+| `--stream-retries` | `1` | Replays of a stream that fails before any event reached the client. Nothing is replayed once the client has seen output; 4xx, rate-limit and quota errors are never retried. When every attempt fails before output, the client gets the backend error as an HTTP status instead of a stream. |
 
 ## Server
 

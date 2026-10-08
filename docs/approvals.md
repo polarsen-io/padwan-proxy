@@ -1,3 +1,7 @@
+---
+icon: lucide/shield-check
+---
+
 # Approval hook
 
 !!! warning "Experimental"
