@@ -1286,16 +1286,16 @@ wheels = [
 
 [[package]]
 name = "padwan-ai"
-version = "0.14.0"
+version = "0.14.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "niquests" },
     { name = "qh3" },
     { name = "urllib3-future" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/33/7d/ec285b8028e225c9c2037c213923a03390ad87efab4b27a11f202ff3c63c/padwan_ai-0.14.0.tar.gz", hash = "sha256:1cdb5c7b16a1a005ef1faea578ceae5b4b6b5e39578a6dbe7fa78d6721808203", size = 104848, upload-time = "2026-09-29T20:00:04.284Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/83/e92ae5904285765c4c9851c74038a0b601792ecd8f72a4372c5df7692658/padwan_ai-0.14.1.tar.gz", hash = "sha256:63211189837f857c547459ebc0ea48aa6bca9b8b86174d47b4ef934da32e8646", size = 105093, upload-time = "2026-10-08T19:40:22.96Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8d/14/af8d588503db2378ef21499f4abacac6b1185e4e66a9e9857dbaaccdabc7/padwan_ai-0.14.0-py3-none-any.whl", hash = "sha256:2fd9688e0eb30c4bb3f5aadef10d91c882bf75dddb966011e545cfa1586cbe6d", size = 130550, upload-time = "2026-09-29T20:00:03.241Z" },
+    { url = "https://files.pythonhosted.org/packages/12/c2/1186fe0c86fed3df03a7f84a3e28b4ab35faab645f514a57ca92254d2db7/padwan_ai-0.14.1-py3-none-any.whl", hash = "sha256:2bc6884499671886f69a07a6957e5034baed76c87df1b81d5df30ad35c0983b6", size = 130826, upload-time = "2026-10-08T19:40:21.779Z" },
 ]
 
 [package.optional-dependencies]
@@ -1358,8 +1358,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "orjson", specifier = ">=3.12" },
-    { name = "padwan-ai", specifier = ">=0.14.0" },
-    { name = "padwan-ai", extras = ["langfuse"], marker = "extra == 'trace'", specifier = ">=0.14.0" },
+    { name = "padwan-ai", specifier = ">=0.14.1" },
+    { name = "padwan-ai", extras = ["langfuse"], marker = "extra == 'trace'", specifier = ">=0.14.1" },
     { name = "piou", specifier = ">=0.37.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
 ]
@@ -1371,7 +1371,7 @@ dev = [
     { name = "niquests", specifier = ">=3.21.1" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.44" },
     { name = "opentelemetry-sdk", specifier = ">=1.44" },
-    { name = "padwan-ai", extras = ["langfuse"], specifier = ">=0.14.0" },
+    { name = "padwan-ai", extras = ["langfuse"], specifier = ">=0.14.1" },
     { name = "pyright", specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
