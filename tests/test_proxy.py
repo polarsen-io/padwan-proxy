@@ -446,16 +446,15 @@ async def test_stream_replayed_when_it_fails_before_any_event(proxy, no_backoff)
         ),
     ],
 )
-async def test_stream_error_reported_in_band(
+async def test_failure_before_first_chunk_gets_an_http_status(
     proxy, no_backoff, failure, expected_calls
 ):
     backend, router = proxy
     for attr, value in failure.items():
         setattr(backend, attr, value)
     proto = await post(router, "/v1/messages", _messages_body(stream=True))
-    events = _parse_sse(proto)
-    assert [name for name, _ in events] == ["error"]
-    assert events[0][1]["type"] == "error"
+    assert proto.stream is None and proto.status >= 400
+    assert json.loads(proto.body)["type"] == "error"
     assert backend.calls == expected_calls
 
 

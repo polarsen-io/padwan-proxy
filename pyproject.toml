@@ -17,13 +17,12 @@ dependencies = [
     # --claude-config renders the client settings.json
     "jinja2>=3.1.6",
     "python-dotenv>=1.2.3",
-    "jupyterlab>=4.6.3",
 ]
 
 [project.optional-dependencies]
 # `--trace` observability: Langfuse or OTLP export.
 trace = [
-    "padwan-ai[langfuse]>=0.11.1",
+    "padwan-ai[langfuse]>=0.14.0",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
 ]
@@ -55,7 +54,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.16.8",
     # keep the trace extra type-checkable/testable in dev
-    "padwan-ai[langfuse]>=0.11.1",
+    "padwan-ai[langfuse]>=0.14.0",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
 ]

@@ -33,8 +33,14 @@ class _CapturedText(list[str]):
             super().append(text)
 
 
+def _needs_content_compat() -> bool:
+    """padwan-ai < 0.14.1 assumes raw OpenAI content is a string; 0.14.1 fixed it."""
+    from importlib.metadata import version
+
+    return tuple(int(p) for p in version("padwan-ai").split(".")[:3]) < (0, 14, 1)
+
+
 def _install_openai_content_compat(otel: Any) -> None:
-    # padwan-ai 0.11.1 still assumes raw OpenAI content is always a string.
     install = getattr(otel, "_install", None)
     if not callable(install) or not all(
         hasattr(otel, name) for name in ("_output_message", "_RawChoice")
@@ -87,7 +93,7 @@ def _enable_langfuse(*, capture_content: bool) -> None:
             integration.tracer_provider.add_span_processor(
                 BatchSpanProcessor(OTLPSpanExporter())
             )
-        if capture_content:
+        if capture_content and _needs_content_compat():
             _install_openai_content_compat(otel)
     except BaseException:
         integration.shutdown()
@@ -136,7 +142,7 @@ def _enable_otlp(*, capture_content: bool) -> None:
             meter_provider=meter_provider,
             capture_content=capture_content,
         )
-        if capture_content:
+        if capture_content and _needs_content_compat():
             _install_openai_content_compat(otel)
     except BaseException:
         otel.uninstrument()

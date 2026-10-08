@@ -68,10 +68,7 @@ def _is_approval_hook(hook: dict[str, Any]) -> bool:
     if hook.get("type") != "command" or not isinstance(command, str):
         return False
     try:
-        return shlex.split(command) in (
-            [sys.executable, "-I", "-m", APPROVALS_MODULE],
-            [sys.executable, "-I", "-m", "padwan_proxy.jev"],
-        )
+        return shlex.split(command)[-3:] == ["-I", "-m", APPROVALS_MODULE]
     except ValueError:
         return False
 
@@ -199,14 +196,6 @@ def write_claude_config(
     settings = _merge_approvals(settings, enabled=approvals, path=path)
 
     merged_env = {**env, **owned}
-    for key in list(merged_env):
-        if key.startswith("PADWAN_PROXY_JEV_"):
-            value = merged_env.pop(key)
-            if approvals is None:
-                merged_env.setdefault(
-                    key.replace("PADWAN_PROXY_JEV_", "PADWAN_PROXY_APPROVALS_", 1),
-                    value,
-                )
     if approvals is not None:
         # Stale keys would aim the hook at the previous backend: a URL at a proxy no
         # longer serving a local model, a gate or model name at the wrong one.

@@ -249,51 +249,15 @@ def test_local_model_env_tracks_approvals(tmp_path, seed, overrides, expected):
     assert _env(_write(tmp_path, **overrides)).get(key) == expected
 
 
-@pytest.mark.parametrize(
-    "approvals",
-    [
-        pytest.param(None, id="preserve"),
-        pytest.param(True, id="enable"),
-        pytest.param(False, id="disable"),
-    ],
-)
-def test_legacy_approval_hook_migration(tmp_path, approvals):
-    custom = {"type": "command", "command": "echo audit -m padwan_proxy.jev"}
-    legacy = {
+def test_approval_hook_from_another_interpreter_is_replaced(tmp_path):
+    foreign = {
         "type": "command",
-        "command": shlex.join([sys.executable, "-I", "-m", "padwan_proxy.jev"]),
-        "timeout": 15,
+        "command": "/opt/old/bin/python -I -m padwan_proxy.approvals",
+        "timeout": 20,
     }
-    permissions = {"allow": ["Read"], "defaultMode": "auto"}
     (tmp_path / "settings.json").write_text(
-        json.dumps(
-            {
-                "permissions": permissions,
-                "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [custom, legacy]}]},
-                "env": {
-                    "KEEP": "yes",
-                    "PADWAN_PROXY_JEV_LOG": "/old/jev.jsonl",
-                    "PADWAN_PROXY_JEV_URL": "http://127.0.0.1:4000",
-                    "PADWAN_PROXY_JEV_ENV_FILE": "/private/key.env",
-                    "PADWAN_PROXY_JEV_MIN_CONFIDENCE": "0.99",
-                },
-            }
-        )
+        json.dumps({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [foreign]}]}})
     )
-    path = _write(tmp_path, approvals=approvals)
-    first = path.read_text()
-    settings = json.loads(first)
+    settings = json.loads(_write(tmp_path, approvals=True).read_text())
     hooks = settings["hooks"]["PreToolUse"][0]["hooks"]
-    assert hooks[0] == custom
-    assert settings["permissions"] == permissions
-    assert len(hooks) == (1 if approvals is False else 2)
-    if approvals is not False:
-        assert shlex.split(hooks[1]["command"])[-1] == "padwan_proxy.approvals"
-    if approvals is None:
-        assert hooks[1]["timeout"] == 15
-        assert settings["env"]["PADWAN_PROXY_APPROVALS_ENV_FILE"] == "/private/key.env"
-        assert settings["env"]["PADWAN_PROXY_APPROVALS_MIN_CONFIDENCE"] == "0.99"
-    assert settings["env"]["KEEP"] == "yes"
-    assert not any(key.startswith("PADWAN_PROXY_JEV_") for key in settings["env"])
-    _write(tmp_path, approvals=approvals)
-    assert path.read_text() == first
+    assert [shlex.split(hook["command"])[0] for hook in hooks] == [sys.executable]
