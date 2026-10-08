@@ -1,3 +1,7 @@
+---
+icon: lucide/route
+---
+
 # Routing
 
 Each request goes to one backend model:

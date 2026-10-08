@@ -1,3 +1,7 @@
+---
+icon: lucide/activity
+---
+
 # Tracing
 
 `--trace` instruments proxied requests with `padwan-ai`'s OpenTelemetry GenAI telemetry. It

@@ -1,3 +1,7 @@
+---
+icon: lucide/code
+---
+
 # Development
 
 ```bash
@@ -15,6 +19,13 @@ uv run --no-sync padwan-proxy --backend-url https://api.example.com/v1/ -m my-mo
 
 Use `uv run --no-sync` for checks while the override is installed; `uv sync` restores the
 locked version.
+
+## Demo GIF
+
+`just demo` re-records `docs/static/demo.gif` from `docs/demo.tape` with
+[vhs](https://github.com/charmbracelet/vhs). It builds the image from the checkout, starts the
+[compose](docker.md#compose) stack with the `.env` backend, runs Claude Code in a throwaway
+`HOME`, then tears both down. Set `PADWAN_PORT` if port 4000 is taken.
 
 ## Live tests
 
