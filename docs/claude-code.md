@@ -1,3 +1,7 @@
+---
+icon: simple/claude
+---
+
 # Claude Code
 
 ## Write the client config
@@ -19,7 +23,7 @@ its own telemetry is labelled with the model that served the request.
 - Existing keys (permissions, hooks, unrelated env) are preserved. Only the env this proxy
   owns is rewritten, and inside `OTEL_RESOURCE_ATTRIBUTES` only `ai.vendor`.
 - `--context-window N` is emitted as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`.
-- It is host-side only: the Docker image has no client config to write.
+- From Docker, mount the directory at the same path; see [Docker](docker.md#write-the-client-config).
 
 ## Tool search
 

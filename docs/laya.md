@@ -1,3 +1,7 @@
+---
+icon: lucide/cpu
+---
+
 # Local Laya model
 
 `--approvals laya` serves TypeSafe's `POST /systemone` route on the proxy itself and points

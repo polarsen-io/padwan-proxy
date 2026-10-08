@@ -48,12 +48,12 @@ ci: lint check test
 # Build the docker image
 [group('docker')]
 build tag='padwan-proxy:latest':
-    docker buildx build --load -t {{ tag }} .
+    docker buildx bake --load --set slim.tags={{ tag }} slim
 
 # Build the docker image with the local Laya approval model (CUDA torch, multi-GB)
 [group('docker')]
 build-laya tag='padwan-proxy:laya':
-    docker buildx build --load --build-arg LAYA=1 -t {{ tag }} .
+    docker buildx bake --load --set laya.tags={{ tag }} laya
 
 # Point gravier at a local checkout to hack on it
 [group('dev')]
@@ -73,7 +73,12 @@ bump *args:
 # Serve docs locally with hot reload
 [group('docs')]
 docs:
-    uv run --group docs zensical serve -f zensical.toml
+    uv run --group docs zensical serve -f zensical.toml --open
+
+# Record docs/static/demo.gif through compose (backend settings in .env)
+[group('docs')]
+demo:
+    vhs docs/demo.tape
 
 # Build docs
 [group('docs')]
