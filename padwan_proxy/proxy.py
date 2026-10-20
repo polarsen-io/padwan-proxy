@@ -5,6 +5,7 @@ import hashlib
 import os
 import re
 import socket
+import sys
 import time
 from http import HTTPStatus
 from importlib.util import find_spec
@@ -38,6 +39,7 @@ from .defaults import (
     PADWAN_BASE_URL_ENV,
 )
 from .logs import log, log_request, route, timing_detail
+from .profiles import PROFILE_FLAG, PROFILES_ENV, expand_profile
 from .systemone import Laya, SystemOneRequest
 from .trace import session_context
 from .utils import console, startup_banner
@@ -659,6 +661,12 @@ def build_router(
 
 
 def proxy_command(
+    profile: str | None = Option(
+        None,
+        PROFILE_FLAG,
+        help="Fill unset options from this table of the profiles file "
+        f"(${PROFILES_ENV}, default ~/.config/padwan-proxy/profiles.toml)",
+    ),
     backend_url: str | None = Option(
         None,
         "--backend-url",
@@ -863,6 +871,7 @@ def proxy_command(
     console.print(
         startup_banner(
             {
+                **({"profile": profile} if profile else {}),
                 "listen": f"http://{host}:{port}",
                 "backend": resolved_backend_url or "?",
                 "model": model,
@@ -896,4 +905,9 @@ def main() -> None:
 
     cli = Cli(description="Anthropic Messages API over any OpenAI-compatible backend")
     cli.main(help="Serve the proxy")(proxy_command)
+    try:
+        sys.argv[1:] = expand_profile(sys.argv[1:], proxy_command)
+    except CommandError as e:
+        cli.formatter.print_error(e.message)
+        sys.exit(1)
     cli.run()
