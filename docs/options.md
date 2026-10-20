@@ -6,6 +6,29 @@ icon: lucide/sliders-horizontal
 
 `padwan-proxy --help` is the canonical list. This page adds the behavior behind each option.
 
+## Profiles
+
+`--profile NAME` reads the `[NAME]` table of `~/.config/padwan-proxy/profiles.toml`
+(`$XDG_CONFIG_HOME` is honored; `$PADWAN_PROXY_PROFILES` points at another file). Keys are
+option names with underscores; flags passed on the command line win over the profile.
+
+```toml
+[scaleway]
+backend_url = "https://api.scaleway.ai/v1/"
+model = "glm-5.3"
+small_model = "qwen3.6-35b-a3b"
+api_key_env = "SCALEWAY_API_KEY"
+claude_config = "~/.claude-scaleway"
+context_window = 256000
+```
+
+```bash
+padwan-proxy --profile scaleway -v --port 4010
+```
+
+Keep keys out of the file: a profile names the env var holding the key (`api_key_env`).
+An unknown profile or option is an error.
+
 ## Backend
 
 | Option | Default | Description |

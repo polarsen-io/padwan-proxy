@@ -4,6 +4,11 @@ set quiet
 default:
     @just --list
 
+# Run the proxy locally with keys loaded from .env, e.g. `just run --profile pglm`
+[group('dev')]
+run *args:
+    uv run --env-file .env padwan-proxy {{ args }}
+
 # Run unit tests
 [group('dev')]
 test *args:
