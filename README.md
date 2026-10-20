@@ -52,7 +52,7 @@ docker run -d --rm --name padwan-proxy -p 127.0.0.1:4000:4000 \
 CLAUDE_CONFIG_DIR=~/.claude-mybackend claude
 ```
 
-With a profile, pass `HOME` and mount the profiles folder at the same path so `~` in it resolves on the host:
+With a profile:
 
 ```bash
 docker run -d --rm --name padwan-proxy -p 127.0.0.1:4000:4000 \
