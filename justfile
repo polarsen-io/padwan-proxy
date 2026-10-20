@@ -75,7 +75,7 @@ bump *args:
 docs:
     uv run --group docs zensical serve -f zensical.toml --open
 
-# Record docs/static/demo.gif through compose (backend settings in .env)
+# Record docs/static/demo.gif: the proxy CLI next to Claude Code
 [group('docs')]
 demo:
     vhs docs/demo.tape
