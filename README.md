@@ -52,6 +52,16 @@ docker run -d --rm --name padwan-proxy -p 127.0.0.1:4000:4000 \
 CLAUDE_CONFIG_DIR=~/.claude-mybackend claude
 ```
 
+With a profile, pass `HOME` and mount the profiles folder at the same path so `~` in it resolves on the host:
+
+```bash
+docker run -d --rm --name padwan-proxy -p 127.0.0.1:4000:4000 \
+  --user "$(id -u):$(id -g)" -e PADWAN_API_KEY -e HOME \
+  -v ~/.config/padwan-proxy:$HOME/.config/padwan-proxy:ro \
+  -v ~/.claude-mybackend:$HOME/.claude-mybackend \
+  ghcr.io/polarsen-io/padwan-proxy:latest --profile mybackend
+```
+
 A [`compose.yaml`](compose.yaml) does the same from a `.env`; see the Docker docs.
 
 **Documentation: <https://polarsen-io.github.io/padwan-proxy>** — routing, Docker
