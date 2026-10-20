@@ -25,7 +25,7 @@ CLAUDE_CONFIG_DIR=~/.claude-mybackend claude
 Or without writing a config: `ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=dummy claude`.
 
 Save the flags as a `[mybackend]` table in `~/.config/padwan-proxy/profiles.toml` and run
-`padwan-proxy --profile mybackend` instead; see [Profiles](docs/options.md#profiles).
+`padwan-proxy --profile mybackend` instead.
 
 Or with Docker, mounting the config dir at the same path so `--claude-config` writes it on the host:
 
