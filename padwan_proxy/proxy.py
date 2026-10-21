@@ -38,7 +38,7 @@ from .defaults import (
     PADWAN_API_KEY_ENV,
     PADWAN_BASE_URL_ENV,
 )
-from .logs import log, log_request, route, timing_detail
+from .logs import GRANIAN_RICH_LOGGING, log, log_request, route, timing_detail
 from .profiles import PROFILE_FLAG, PROFILES_ENV, expand_profile
 from .systemone import Laya, SystemOneRequest
 from .trace import session_context
@@ -894,7 +894,12 @@ def proxy_command(
         )
     )
     try:
-        serve("padwan_proxy.rsgi:app", host=host, port=port)
+        serve(
+            "padwan_proxy.rsgi:app",
+            host=host,
+            port=port,
+            log_dictconfig=GRANIAN_RICH_LOGGING if rich else None,
+        )
     except AddressInUseError as e:
         raise CommandError(str(e)) from e
 

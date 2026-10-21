@@ -24,22 +24,41 @@ def setup_logging(*, rich: bool = False) -> None:
             level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S"
         )
         return
-    from rich.logging import RichHandler
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(message)s",
         datefmt="[%H:%M:%S]",
-        handlers=[
-            RichHandler(
-                console=console,
-                markup=True,
-                show_path=False,
-                show_level=True,
-                omit_repeated_times=False,
-            )
-        ],
+        handlers=[rich_handler()],
     )
+
+
+def rich_handler(*, markup: bool = True) -> logging.Handler:
+    """The shared rich log handler, also used for granian's own lines."""
+    from rich.logging import RichHandler
+
+    return RichHandler(
+        console=console,
+        markup=markup,
+        show_path=False,
+        show_level=True,
+        omit_repeated_times=False,
+    )
+
+
+# granian dictConfig: its server lines through the same handler as ours
+GRANIAN_RICH_LOGGING = {
+    "formatters": {"rich": {"format": "%(message)s", "datefmt": "[%H:%M:%S]"}},
+    "handlers": {
+        "rich": {
+            "()": "padwan_proxy.logs.rich_handler",
+            "markup": False,
+            "formatter": "rich",
+        }
+    },
+    "loggers": {
+        "_granian": {"handlers": ["rich"], "level": "INFO", "propagate": False}
+    },
+}
 
 
 def _style(text: object, style: str) -> str:

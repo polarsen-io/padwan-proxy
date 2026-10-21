@@ -90,7 +90,9 @@ def test_claude_config_cli_uses_resolved_options(tmp_path, monkeypatch):
     assert settings["env"]["API_TIMEOUT_MS"] == "90500"
     assert settings["env"]["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] == "202752"
     assert settings["env"]["OTEL_RESOURCE_ATTRIBUTES"] == "ai.vendor=Z.ai"
-    serve.assert_called_once_with("padwan_proxy.rsgi:app", host="0.0.0.0", port=4100)
+    serve.assert_called_once_with(
+        "padwan_proxy.rsgi:app", host="0.0.0.0", port=4100, log_dictconfig=None
+    )
 
 
 @pytest.mark.parametrize(
