@@ -24,8 +24,19 @@ CLAUDE_CONFIG_DIR=~/.claude-mybackend claude
 
 Or without writing a config: `ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=dummy claude`.
 
-Save the flags as a `[mybackend]` table in `~/.config/padwan-proxy/profiles.toml` and run
-`padwan-proxy --profile mybackend` instead; see [Profiles](docs/options.md#profiles).
+Or save the flags as a profile in `~/.config/padwan-proxy/profiles.toml` (flags passed on the command line win):
+
+```toml
+[mybackend]
+backend_url = "https://api.example.com/v1/"
+model = "my-model"
+small_model = "my-small-model"
+claude_config = "~/.claude-mybackend"
+```
+
+```bash
+uvx padwan-proxy --profile mybackend
+```
 
 Or with Docker, mounting the config dir at the same path so `--claude-config` writes it on the host:
 
@@ -39,6 +50,16 @@ docker run -d --rm --name padwan-proxy -p 127.0.0.1:4000:4000 \
   --claude-config $HOME/.claude-mybackend
 
 CLAUDE_CONFIG_DIR=~/.claude-mybackend claude
+```
+
+With a profile:
+
+```bash
+docker run -d --rm --name padwan-proxy -p 127.0.0.1:4000:4000 \
+  --user "$(id -u):$(id -g)" -e PADWAN_API_KEY -e HOME \
+  -v ~/.config/padwan-proxy:$HOME/.config/padwan-proxy:ro \
+  -v ~/.claude-mybackend:$HOME/.claude-mybackend \
+  ghcr.io/polarsen-io/padwan-proxy:latest --profile mybackend
 ```
 
 A [`compose.yaml`](compose.yaml) does the same from a `.env`; see the Docker docs.
