@@ -1286,12 +1286,16 @@ wheels = [
 
 [[package]]
 name = "padwan-ai"
-version = "0.15.0"
-source = { git = "https://github.com/polarsen-io/padwan-ai?branch=feat%2Fanthropic-gemini-compat#5efb40e1ec963176ea553ca7736bd033d865af28" }
+version = "0.16.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "niquests" },
     { name = "qh3" },
     { name = "urllib3-future" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/75/70/ec6e275490e0f25ef8e247dcdfedc793581a585795bd69bdc8a0faec0057/padwan_ai-0.16.0.tar.gz", hash = "sha256:ce45942fd151d085bbe46463f0a1a277534b278ba966545afa0793894d4bb7fe", size = 131904, upload-time = "2026-10-23T20:07:54.762Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/63/17/ba8fe1cc1c74aa898400d1af67fb0ff06aff84a55999ccdd97a0ea0eba54/padwan_ai-0.16.0-py3-none-any.whl", hash = "sha256:099b7ce59a908c830cfc75c186cd7ba1b5bb2a3847961b9f3af3c5ff5e6c6c74", size = 158395, upload-time = "2026-10-23T20:07:53.526Z" },
 ]
 
 [package.optional-dependencies]
@@ -1354,8 +1358,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = ">=1.44" },
     { name = "orjson", specifier = ">=3.12" },
-    { name = "padwan-ai", git = "https://github.com/polarsen-io/padwan-ai?branch=feat%2Fanthropic-gemini-compat" },
-    { name = "padwan-ai", extras = ["langfuse"], marker = "extra == 'trace'", git = "https://github.com/polarsen-io/padwan-ai?branch=feat%2Fanthropic-gemini-compat" },
+    { name = "padwan-ai", specifier = ">=0.16.0" },
+    { name = "padwan-ai", extras = ["langfuse"], marker = "extra == 'trace'", specifier = ">=0.16.0" },
     { name = "piou", specifier = ">=0.37.0" },
     { name = "python-dotenv", specifier = ">=1.2.3" },
 ]
@@ -1367,7 +1371,7 @@ dev = [
     { name = "niquests", specifier = ">=3.21.1" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.44" },
     { name = "opentelemetry-sdk", specifier = ">=1.44" },
-    { name = "padwan-ai", extras = ["langfuse"], git = "https://github.com/polarsen-io/padwan-ai?branch=feat%2Fanthropic-gemini-compat" },
+    { name = "padwan-ai", extras = ["langfuse"], specifier = ">=0.16.0" },
     { name = "pyright", specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-asyncio", specifier = ">=1.4.0" },
