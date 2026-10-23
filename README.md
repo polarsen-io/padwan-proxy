@@ -9,7 +9,7 @@
 [![Release](https://img.shields.io/github/v/release/polarsen-io/padwan-proxy)](https://github.com/polarsen-io/padwan-proxy/releases)
 [![Docs](https://img.shields.io/badge/docs-polarsen--io.github.io-1A8B9E)](https://polarsen-io.github.io/padwan-proxy)
 
-Serve the Anthropic Messages API (`/v1/messages` + `count_tokens`) on top of any OpenAI-compatible backend, so Anthropic clients such as Claude Code can use it. Built on [`padwan-ai`](https://github.com/polarsen-io/padwan-ai)'s Anthropic↔OpenAI translation layer, served by [granian](https://github.com/emmett-framework/granian) via [gravier](https://github.com/Andarius/gravier).
+Serve the Anthropic Messages API (`/v1/messages` + `count_tokens`) on top of any OpenAI-compatible backend, or Gemini (`--backend gemini`), so Anthropic clients such as Claude Code can use it. Built on [`padwan-ai`](https://github.com/polarsen-io/padwan-ai)'s Anthropic↔OpenAI and Anthropic↔Gemini translation layers, served by [granian](https://github.com/emmett-framework/granian) via [gravier](https://github.com/Andarius/gravier).
 
 ![Claude Code running GLM 5.2 on Scaleway through padwan-proxy](https://raw.githubusercontent.com/polarsen-io/padwan-proxy/master/docs/static/demo.gif)
 

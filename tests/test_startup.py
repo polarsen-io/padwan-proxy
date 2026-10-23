@@ -29,8 +29,13 @@ if pid == 0:
         with patch.object(proxy, "build_router") as router:
             import padwan_proxy.rsgi
             client.assert_called_once_with(
-                "https://worker.example/v1/", "worker-main", "WORKER_KEY", timeout=12.5
+                "https://worker.example/v1/",
+                "worker-main",
+                "WORKER_KEY",
+                timeout=12.5,
+                backend="openai",
             )
+            assert router.call_args.kwargs["backend"] == "openai"
             assert router.call_args.kwargs["model"] == "worker-main"
             assert router.call_args.kwargs["small_model"] == "worker-small"
     os._exit(0)

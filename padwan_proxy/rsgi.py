@@ -1,13 +1,18 @@
 # Granian RSGI target: rebuilds the proxy from the env snapshot written by
 # proxy_command, once per worker process.
+from typing import cast
+
 from gravier import App
 
 from . import env
 from .logs import setup_logging
-from .proxy import _make_client, build_router
+from .proxy import Backend, _make_client, build_router
 from .systemone import load as load_laya
 
-_client = _make_client(env.BACKEND_URL, env.MODEL, env.API_KEY_ENV, timeout=env.TIMEOUT)
+_backend = cast(Backend, env.BACKEND)
+_client = _make_client(
+    env.BACKEND_URL, env.MODEL, env.API_KEY_ENV, timeout=env.TIMEOUT, backend=_backend
+)
 # Load and warm the model before accepting hook calls.
 _laya = (
     load_laya(env.LAYA_MODEL, subfolder=env.LAYA_SUBFOLDER) if env.LAYA_MODEL else None
@@ -32,6 +37,7 @@ app = App(
     build_router(
         client=_client,
         model=env.MODEL,
+        backend=_backend,
         small_model=env.SMALL_MODEL,
         vision_model=env.VISION_MODEL,
         vision_mode=env.VISION_MODE,

@@ -10,6 +10,7 @@ import pytest
 import uvicorn
 from granian._granian import RSGIProtocolClosed
 from gravier.testing import FakeProto, FakeScope
+from padwan_ai.gemini.client import GEMINI_ENDPOINT, GeminiClient
 from padwan_ai.openai.client import OpenAIClient
 from piou import CommandError
 from starlette.applications import Starlette
@@ -903,3 +904,218 @@ def test_make_client_resolution(
     assert client._api_key == expected_key
     # reasoning models go silent for minutes, but a dead host must fail fast
     assert client.timeout == (10.0, 3600)
+
+
+# Gemini backend
+
+GEMINI_USAGE = {
+    "promptTokenCount": 10,
+    "candidatesTokenCount": 2,
+    "totalTokenCount": 12,
+}
+GEMINI_COMPLETION = {
+    "candidates": [
+        {
+            "content": {"role": "model", "parts": [{"text": "Hello!"}]},
+            "finishReason": "STOP",
+        }
+    ],
+    "usageMetadata": GEMINI_USAGE,
+    "modelVersion": "gemini-test",
+}
+GEMINI_TEXT_CHUNKS = [
+    {"candidates": [{"content": {"role": "model", "parts": [{"text": "Hel"}]}}]},
+    {
+        "candidates": [
+            {
+                "content": {"role": "model", "parts": [{"text": "lo"}]},
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": GEMINI_USAGE,
+    },
+]
+GEMINI_TOOL_CHUNKS = [
+    {
+        "candidates": [
+            {
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {
+                            "functionCall": {
+                                "name": "get_weather",
+                                "args": {"city": "Paris"},
+                            }
+                        }
+                    ],
+                },
+                "finishReason": "STOP",
+            }
+        ],
+        "usageMetadata": GEMINI_USAGE,
+    },
+]
+
+
+class FakeGeminiBackend:
+    """Gemini generateContent / streamGenerateContent stub recording the last call."""
+
+    def __init__(self) -> None:
+        self.last_path: str | None = None
+        self.last_body: dict[str, Any] | None = None
+        self.stream_chunks: list[dict[str, Any]] = GEMINI_TEXT_CHUNKS
+        self.completion: dict[str, Any] = GEMINI_COMPLETION
+
+    def app(self) -> Starlette:
+        async def generate(request: Request) -> Response:
+            self.last_path = request.url.path
+            self.last_body = await request.json()
+            if request.url.path.endswith(":streamGenerateContent"):
+                lines = [
+                    f"data: {json.dumps(chunk)}\n\n" for chunk in self.stream_chunks
+                ]
+
+                async def _gen():
+                    for line in lines:
+                        yield line
+
+                return StreamingResponse(_gen(), media_type="text/event-stream")
+            return JSONResponse(self.completion)
+
+        return Starlette(
+            routes=[Route("/models/{rest:path}", generate, methods=["POST"])]
+        )
+
+
+@pytest.fixture
+async def gemini_proxy():
+    """(FakeGeminiBackend, proxy Router) with `backend="gemini"`."""
+    backend = FakeGeminiBackend()
+    backend_server, backend_task, backend_port = await _serve(backend.app())
+    client = GeminiClient(
+        model=None,
+        base_url=f"http://127.0.0.1:{backend_port}/",
+        api_key="test-key",
+        timeout=cast(float, (10.0, 3600.0)),
+    )
+    async with client:
+        router = build_router(
+            client=client,
+            backend="gemini",
+            model="gemini-main",
+            small_model="gemini-small",
+        )
+        yield backend, router
+    backend_server.should_exit = True
+    await backend_task
+
+
+async def test_gemini_non_stream(gemini_proxy):
+    backend, router = gemini_proxy
+    proto = await post(router, "/v1/messages", _messages_body(system="Be brief."))
+    assert proto.status == 200
+    data = json.loads(proto.body)
+    assert data["model"] == "claude-sonnet-5"
+    assert data["content"] == [{"type": "text", "text": "Hello!"}]
+    assert data["stop_reason"] == "end_turn"
+    assert data["usage"] == {"input_tokens": 10, "output_tokens": 2}
+    assert backend.last_path == "/models/gemini-main:generateContent"
+    assert backend.last_body is not None
+    assert backend.last_body["contents"] == [
+        {"role": "user", "parts": [{"text": "hello"}]}
+    ]
+    assert "model" not in backend.last_body
+
+
+@pytest.mark.parametrize(
+    "chunks, expected_block, expected_stop",
+    [
+        pytest.param(
+            GEMINI_TEXT_CHUNKS, {"type": "text", "text": "Hello"}, "end_turn", id="text"
+        ),
+        pytest.param(
+            GEMINI_TOOL_CHUNKS,
+            {"type": "tool_use", "name": "get_weather", "input": {"city": "Paris"}},
+            "tool_use",
+            id="tool-call",
+        ),
+    ],
+)
+async def test_gemini_stream(gemini_proxy, chunks, expected_block, expected_stop):
+    backend, router = gemini_proxy
+    backend.stream_chunks = chunks
+    proto = await post(
+        router, "/v1/messages", _messages_body(stream=True, model="claude-haiku-4-5")
+    )
+    assert proto.status == 200
+    events = _parse_sse(proto)
+    names = [name for name, _ in events]
+    assert names[0] == "message_start" and names[-1] == "message_stop"
+    block = next(
+        e["content_block"] for _, e in events if e["type"] == "content_block_start"
+    )
+    text = "".join(
+        e["delta"]["text"]
+        for _, e in events
+        if e["type"] == "content_block_delta" and e["delta"]["type"] == "text_delta"
+    )
+    partial_json = "".join(
+        e["delta"]["partial_json"]
+        for _, e in events
+        if e["type"] == "content_block_delta"
+        and e["delta"]["type"] == "input_json_delta"
+    )
+    if expected_block["type"] == "text":
+        assert text == expected_block["text"]
+    else:
+        assert block["name"] == expected_block["name"]
+        assert json.loads(partial_json or "{}") == expected_block["input"] or (
+            block.get("input") == expected_block["input"]
+        )
+    message_delta = next(e for _, e in events if e["type"] == "message_delta")
+    assert message_delta["delta"]["stop_reason"] == expected_stop
+    assert message_delta["usage"] == {"input_tokens": 10, "output_tokens": 2}
+    assert backend.last_path == "/models/gemini-small:streamGenerateContent"
+    assert backend.last_body is not None
+    assert "stream_options" not in backend.last_body
+
+
+@pytest.mark.parametrize(
+    "env, api_key_env, backend_url, error, expected_url, expected_key",
+    [
+        pytest.param(
+            {"GEMINI_API_KEY": "g-key"},
+            None,
+            None,
+            None,
+            GEMINI_ENDPOINT,
+            "g-key",
+            id="default-env-var",
+        ),
+        pytest.param(
+            {"MY_KEY": "k", "GEMINI_API_KEY": "g-key"},
+            "MY_KEY",
+            "http://localhost:9/",
+            None,
+            "http://localhost:9/",
+            "k",
+            id="explicit-env-var-and-url",
+        ),
+        pytest.param({}, None, None, "GEMINI_API_KEY not set", None, None, id="no-key"),
+    ],
+)
+def test_make_client_gemini(
+    clean_env, env, api_key_env, backend_url, error, expected_url, expected_key
+):
+    clean_env.delenv("GEMINI_API_KEY", raising=False)
+    for k, v in env.items():
+        clean_env.setenv(k, v)
+    with nullcontext() if error is None else pytest.raises(CommandError) as exc:
+        client = _make_client(backend_url, "gemini-main", api_key_env, backend="gemini")
+    if error is not None:
+        assert error in exc.value.message
+        return
+    assert isinstance(client, GeminiClient)
+    assert client.base_url == expected_url
+    assert client._api_key == expected_key

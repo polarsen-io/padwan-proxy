@@ -10,7 +10,7 @@ import time
 from http import HTTPStatus
 from importlib.util import find_spec
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import msgspec
 from granian._granian import RSGIHTTPProtocol, RSGIProtocolClosed
@@ -22,8 +22,14 @@ from padwan_ai.anthropic.events import (
     response_to_anthropic,
     stream_to_anthropic,
 )
+from padwan_ai.anthropic.gemini_compat import (
+    gemini_response_to_anthropic,
+    gemini_stream_to_anthropic,
+    messages_to_gemini,
+)
 from padwan_ai.anthropic.models import AnthropicCompatBody
 from padwan_ai.errors import LLMError, QuotaExceededError, TooManyRequestsError
+from padwan_ai.gemini.client import GEMINI_ENDPOINT, GeminiClient
 from padwan_ai.openai.client import OpenAIClient, _OpenAIBase
 from piou import CommandError, Option
 
@@ -45,13 +51,15 @@ from .trace import session_context
 from .utils import console, startup_banner
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from padwan_ai.anthropic.models import CountTokensResponse
     from padwan_ai.openai.types import CreateChatCompletionRequest
     from padwan_ai.typesafe.models import Question
 
-__all__ = ("build_router", "main", "proxy_command")
+__all__ = ("Backend", "build_router", "main", "proxy_command")
+
+Backend = Literal["openai", "gemini"]
 
 SSE_HEADERS = [
     ("content-type", "text/event-stream"),
@@ -187,8 +195,24 @@ def _make_client(
     model: str,
     api_key_env: str | None,
     timeout: float = DEFAULT_TIMEOUT,
-) -> _OpenAIBase:
+    *,
+    backend: Backend = "openai",
+) -> _OpenAIBase | GeminiClient:
     """Build the backend client with explicit, Padwan, then OpenAI key precedence."""
+    # (connect, read) tuple: a read timeout long enough for a silent
+    # reasoning model must not also let a dead host hang that long.
+    timeouts = cast(float, (_CONNECT_TIMEOUT, timeout))
+    if backend == "gemini":
+        key_env = api_key_env or "GEMINI_API_KEY"
+        api_key = os.environ.get(key_env) or os.environ.get(PADWAN_API_KEY_ENV)
+        if not api_key:
+            raise CommandError(f"{key_env} not set")
+        return GeminiClient(
+            model=model,
+            base_url=backend_url or GEMINI_ENDPOINT,
+            api_key=api_key,
+            timeout=timeouts,
+        )
     backend_url = backend_url or os.environ.get(PADWAN_BASE_URL_ENV)
     if not backend_url:
         raise CommandError(
@@ -206,15 +230,12 @@ def _make_client(
             "[yellow]No backend API key set; connecting to the backend "
             "unauthenticated (fine for local servers)[/yellow]"
         )
-    client_kwargs: dict[str, Any] = {
-        "model": model,
-        "base_url": backend_url,
-        "api_key": api_key or "no-key-required",
-        # (connect, read) tuple: a read timeout long enough for a silent
-        # reasoning model must not also let a dead host hang that long.
-        "timeout": cast(float, (_CONNECT_TIMEOUT, timeout)),
-    }
-    return OpenAIClient(**client_kwargs)
+    return OpenAIClient(
+        model=model,
+        base_url=backend_url,
+        api_key=api_key or "no-key-required",
+        timeout=timeouts,
+    )
 
 
 def _pick_model(requested: str, *, model: str, small_model: str | None) -> str:
@@ -342,8 +363,9 @@ def _tool_names(content: list[Any]) -> list[str]:
 
 def build_router(
     *,
-    client: _OpenAIBase,
+    client: _OpenAIBase | GeminiClient,
     model: str,
+    backend: Backend = "openai",
     small_model: str | None = None,
     vision_model: str | None = None,
     vision_mode: str = "route",
@@ -354,9 +376,24 @@ def build_router(
     rich: bool = False,
     laya: Laya | None = None,
 ) -> Router:
-    """Build the Anthropic-compatible RSGI router over an OpenAI-compatible client."""
+    """Build the Anthropic-compatible RSGI router over the backend client.
+
+    `backend` picks the translation functions; the request flow is shared.
+    """
     router = Router()
     captions: dict[str, str] = {}
+    # The backend decides the three translation steps; the request flow is shared.
+    translate: Callable[..., Any]
+    to_events: Callable[..., AsyncIterator[Any]]
+    to_response: Callable[..., Any]
+    if backend == "gemini":
+        translate = messages_to_gemini
+        to_events = gemini_stream_to_anthropic
+        to_response = gemini_response_to_anthropic
+    else:
+        translate = _translate_body
+        to_events = stream_to_anthropic
+        to_response = response_to_anthropic
 
     async def _stream(
         proto: RSGIHTTPProtocol,
@@ -393,8 +430,9 @@ def build_router(
     ) -> Response | None:
         start = time.monotonic()
         backend_wait = [0.0]
-        # Without this OpenAI-compatible backends omit usage from the final chunk.
-        request_body.setdefault("stream_options", {"include_usage": True})
+        if backend == "openai":
+            # Without this OpenAI-compatible backends omit usage from the final chunk.
+            request_body.setdefault("stream_options", {"include_usage": True})
         # Opened on the first backend chunk: an earlier failure still gets a real
         # HTTP status, which Anthropic clients retry on.
         transport = None
@@ -409,7 +447,7 @@ def build_router(
                 chunks: AsyncIterator[Any] = client.stream(cast(Any, request_body))
                 if timings:
                     chunks = _timed_chunks(chunks, backend_wait)
-                events = stream_to_anthropic(
+                events = to_events(
                     _mark_first(chunks, first_chunk), model=requested_model
                 )
                 # message_start is emitted before any backend I/O; hold frames
@@ -504,7 +542,7 @@ def build_router(
                 else:
                     captioned = await _caption_images(
                         cast(list, body["messages"]),
-                        client=client,
+                        client=cast(_OpenAIBase, client),
                         model=vision_model,
                         cache=captions,
                     )
@@ -512,7 +550,7 @@ def build_router(
             # Anthropic clients ask for large budgets (32k); backends cap lower.
             body["max_tokens"] = min(body["max_tokens"], max_output_tokens)
             xlate_start = time.perf_counter()
-            backend_body = cast("dict[str, Any]", _translate_body(body, model=target))
+            backend_body = cast("dict[str, Any]", translate(body, model=target))
             req_xlate = time.perf_counter() - xlate_start
             fmt = format_tree if rich else format_breakdown
             detail = fmt(prompt_breakdown(body)) if breakdown else ""
@@ -552,7 +590,7 @@ def build_router(
             status, error_body = error_to_anthropic(e)
             return Response(error_body, status=status)
         backend_s = time.monotonic() - start
-        resp = response_to_anthropic(cast(Any, data), model=requested_model)
+        resp = to_response(cast(Any, data), model=requested_model)
         elapsed = time.monotonic() - start + req_xlate
         log_request(
             requested_model,
@@ -667,10 +705,18 @@ def proxy_command(
         help="Fill unset options from this table of the profiles file "
         f"(${PROFILES_ENV}, default ~/.config/padwan-proxy/profiles.toml)",
     ),
+    backend: str = Option(
+        "openai",
+        "--backend",
+        choices=["openai", "gemini"],
+        help="Backend API: `openai` for any OpenAI-compatible endpoint, `gemini` "
+        "for the Google Generative Language API (key from $GEMINI_API_KEY)",
+    ),
     backend_url: str | None = Option(
         None,
         "--backend-url",
-        help="OpenAI-compatible endpoint (default: $PADWAN_BASE_URL)",
+        help="Backend endpoint (default: $PADWAN_BASE_URL, or the Gemini API "
+        "with --backend gemini)",
     ),
     model: str = Option(..., "-m", "--model", help="Backend model for main requests"),
     small_model: str | None = Option(
@@ -783,13 +829,18 @@ def proxy_command(
         "request-translation time, proxy overhead",
     ),
 ) -> None:
-    """Serve the Anthropic Messages API over an OpenAI-compatible backend.
+    """Serve the Anthropic Messages API over an OpenAI-compatible or Gemini backend.
 
     Point an Anthropic client at it, e.g.:
     ANTHROPIC_BASE_URL=http://127.0.0.1:4000 ANTHROPIC_AUTH_TOKEN=dummy claude
     """
     if context_window is not None and context_window <= 0:
         raise CommandError("--context-window must be greater than zero")
+    kind = cast(Backend, backend)
+    if kind == "gemini" and vision_model:
+        raise CommandError(
+            "--vision-model is for OpenAI-compatible backends; Gemini reads images"
+        )
     if approvals and no_approvals:
         raise CommandError("pass only one of --approvals or --no-approvals")
     # Jev lives entirely in the hook, so it is useless without settings to write;
@@ -819,9 +870,10 @@ def proxy_command(
 
     # Validate configuration in the CLI process for clean errors; workers
     # rebuild the client from the env snapshot below.
-    _make_client(backend_url, model, api_key_env)
-
-    resolved_backend_url = backend_url or os.environ.get(PADWAN_BASE_URL_ENV)
+    _make_client(backend_url, model, api_key_env, backend=kind)
+    resolved_backend_url = backend_url or (
+        GEMINI_ENDPOINT if kind == "gemini" else os.environ.get(PADWAN_BASE_URL_ENV)
+    )
     local = approvals == "laya"
     approval_model = approval_model or (DEFAULT_LAYA_MODEL if local else None)
     approvals_config = True if approvals else False if no_approvals else None
@@ -844,6 +896,7 @@ def proxy_command(
         )
 
     env: dict[str, str | None] = {
+        "BACKEND": backend,
         "BACKEND_URL": backend_url,
         "MODEL": model,
         "SMALL_MODEL": small_model,
