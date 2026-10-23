@@ -3,6 +3,7 @@ import os
 from .defaults import DEFAULT_STREAM_RETRIES, DEFAULT_TIMEOUT, ENV_PREFIX
 
 # Import only in workers, after the CLI writes its environment snapshot.
+BACKEND = os.environ.get(ENV_PREFIX + "BACKEND", "openai")
 BACKEND_URL = os.environ.get(ENV_PREFIX + "BACKEND_URL")
 MODEL = os.environ.get(ENV_PREFIX + "MODEL", "")
 SMALL_MODEL = os.environ.get(ENV_PREFIX + "SMALL_MODEL")

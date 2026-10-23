@@ -19,6 +19,7 @@ VENDORS = {
     "api.openai.com": "OpenAI",
     "api.scaleway.ai": "Scaleway",
     "api.z.ai": "Z.ai",
+    "generativelanguage.googleapis.com": "Google",
 }
 
 SETTINGS_FILE = "settings.json"

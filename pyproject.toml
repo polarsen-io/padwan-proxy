@@ -38,6 +38,10 @@ padwan-proxy = "padwan_proxy:main"
 requires = ["uv_build>=0.9.18,<0.10.0"]
 build-backend = "uv_build"
 
+[tool.uv.sources]
+# until padwan-ai releases the Gemini bridge (polarsen-io/padwan-ai#91)
+padwan-ai = { git = "https://github.com/polarsen-io/padwan-ai", branch = "feat/anthropic-gemini-compat" }
+
 [tool.uv.build-backend]
 module-root = ""
 

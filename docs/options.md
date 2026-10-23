@@ -33,7 +33,8 @@ An unknown profile or option is an error.
 
 | Option | Default | Description |
 |---|---|---|
-| `--backend-url` | `$PADWAN_BASE_URL` | OpenAI-compatible endpoint. |
+| `--backend` | `openai` | `openai` for any OpenAI-compatible endpoint, `gemini` for the Google Generative Language API (key from `GEMINI_API_KEY`; no `--vision-model`, Gemini reads images). |
+| `--backend-url` | `$PADWAN_BASE_URL`, or the Gemini API | Backend endpoint. |
 | `--api-key-env VAR` | `PADWAN_API_KEY`, then `OPENAI_API_KEY` | Env var holding the backend key. |
 | `-m/--model` | required | Model for main requests. |
 | `--small-model` | — | Model for haiku-tier requests. See [Routing](routing.md). |
