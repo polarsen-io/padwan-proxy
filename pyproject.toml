@@ -48,7 +48,7 @@ dev = [
     "starlette>=1.6",
     "uvicorn>=0.53",
     # http client for ASGIBridge tests
-    "niquests>=3.21.1",
+    "niquests>=3.21.2",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
