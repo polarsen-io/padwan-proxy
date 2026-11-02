@@ -52,7 +52,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.1",
     "pytest-cov>=7.1.0",
-    "ruff>=0.16.8",
+    "ruff>=0.17.3",
     # keep the trace extra type-checkable/testable in dev
     "padwan-ai[langfuse]>=0.16.0",
     "opentelemetry-sdk>=1.44",
