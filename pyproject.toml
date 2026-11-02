@@ -59,7 +59,7 @@ dev = [
     "opentelemetry-exporter-otlp>=1.44",
 ]
 bump = [
-    "commitizen>=4.18.1",
+    "commitizen>=4.19.3",
 ]
 docs = [
     "zensical>=0.0.73",
