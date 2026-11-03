@@ -9,11 +9,11 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "padwan-ai>=0.16.0",
-    "piou>=0.37.0",
+    "padwan-ai>=0.17.0",
+    "piou>=0.38.2",
     "gravier>=0.1.0",
     "orjson>=3.12",
-    "msgspec>=0.19",
+    "msgspec>=0.22.0",
     # --claude-config renders the client settings.json
     "jinja2>=3.1.6",
     "python-dotenv>=1.2.4",
@@ -22,20 +22,20 @@ dependencies = [
 [project.optional-dependencies]
 # `--trace` observability: Langfuse or OTLP export.
 trace = [
-    "padwan-ai[langfuse]>=0.16.0",
+    "padwan-ai[langfuse]>=0.17.0",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
 ]
 # `--laya` local tool approvals: a Laya checkpoint instead of the TypeSafe API.
 laya = [
-    "laya>=0.3.3",
+    "laya>=0.4.19",
 ]
 
 [project.scripts]
 padwan-proxy = "padwan_proxy:main"
 
 [build-system]
-requires = ["uv_build>=0.9.18,<0.10.0"]
+requires = ["uv_build>=0.13.6,<0.13.7"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -46,7 +46,7 @@ dev = [
     "pyright>=1.1.414",
     # fake OpenAI backend in tests
     "starlette>=1.6",
-    "uvicorn>=0.53",
+    "uvicorn>=0.54.0",
     # http client for ASGIBridge tests
     "niquests>=3.21.2",
     "pytest>=9.2.0",
@@ -54,7 +54,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.17.3",
     # keep the trace extra type-checkable/testable in dev
-    "padwan-ai[langfuse]>=0.16.0",
+    "padwan-ai[langfuse]>=0.17.0",
     "opentelemetry-sdk>=1.44",
     "opentelemetry-exporter-otlp>=1.44",
 ]
@@ -62,7 +62,7 @@ bump = [
     "commitizen>=4.19.3",
 ]
 docs = [
-    "zensical>=0.0.73",
+    "zensical>=0.0.74",
 ]
 
 [tool.commitizen]
