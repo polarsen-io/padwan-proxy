@@ -1416,7 +1416,7 @@ requires-dist = [
     { name = "orjson", specifier = ">=3.13.0" },
     { name = "padwan-ai", specifier = ">=0.16.0" },
     { name = "padwan-ai", extras = ["langfuse"], marker = "extra == 'trace'", specifier = ">=0.16.0" },
-    { name = "piou", specifier = ">=0.37.0" },
+    { name = "piou", specifier = ">=0.38.2" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
 ]
 provides-extras = ["trace", "laya"]
@@ -1449,15 +1449,15 @@ wheels = [
 
 [[package]]
 name = "piou"
-version = "0.37.0"
+version = "0.38.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "rich" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3d/32/6def501cfb0de042250544a5277cabe9cfacaf87303b3e43a4fb98b8652a/piou-0.37.0.tar.gz", hash = "sha256:bd872f4ccfaa6a16e95c055dcb7b8c55bd2d69ccbd722e728ee2f7508e9d59c2", size = 1652329, upload-time = "2026-08-18T14:09:00.753Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/0e/0a03dd6e4678006786301daddd80185129bebc56529c65e620662f88720f/piou-0.38.2.tar.gz", hash = "sha256:7ee9cfc6f166e3b497e1069c682e78c15448dd74d904dd2f7afa79712355b946", size = 1662571, upload-time = "2026-10-19T21:48:17.281Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/85/d4/b7f6bda3ecc23009e62d1742393f6c20f6295e0d544abdfd38cebcfcdf8a/piou-0.37.0-py3-none-any.whl", hash = "sha256:e28c1be2c055f48eb7ce3bcbc316f76e0e07be82e718130a41f8e6dfe9b8c69f", size = 57238, upload-time = "2026-08-18T14:08:59.679Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/e7/2d8e973a77823953e9cbcd1c7519b6b5db6e671955ed7e741054092bf945/piou-0.38.2-py3-none-any.whl", hash = "sha256:7cfdfd6a8b228abe0608f254ad0cff9d3f7784cbdb892ff567c451d46b39990e", size = 61264, upload-time = "2026-10-19T21:48:16.136Z" },
 ]
 
 [[package]]
