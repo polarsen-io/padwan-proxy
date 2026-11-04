@@ -9,7 +9,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
-    "padwan-ai>=0.16.0",
+    "padwan-ai>=0.18.0",
     "piou>=0.38.2",
     "gravier>=0.1.0",
     "orjson>=3.13.0",
@@ -22,7 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 # `--trace` observability: Langfuse or OTLP export.
 trace = [
-    "padwan-ai[langfuse]>=0.16.0",
+    "padwan-ai[langfuse]>=0.18.0",
     "opentelemetry-sdk>=1.45.2",
     "opentelemetry-exporter-otlp>=1.45.2",
 ]
@@ -54,7 +54,7 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.17.3",
     # keep the trace extra type-checkable/testable in dev
-    "padwan-ai[langfuse]>=0.16.0",
+    "padwan-ai[langfuse]>=0.18.0",
     "opentelemetry-sdk>=1.45.2",
     "opentelemetry-exporter-otlp>=1.45.2",
 ]
