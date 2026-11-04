@@ -10,7 +10,7 @@ RUN uv sync --frozen --no-dev --no-editable --no-install-project ${LAYA:+--extra
 COPY padwan_proxy/ padwan_proxy/
 RUN uv sync --frozen --no-dev --no-editable ${LAYA:+--extra laya}
 
-FROM python:3.14-slim-bookworm
+FROM python:3.14-slim-bookworm@sha256:516b51cb9db2ef061e465c803e50f64361b82cefd91e525b889b967b83e83527
 
 COPY --from=build /src/polarsen/padwan-proxy/.venv /src/polarsen/padwan-proxy/.venv
 # --laya downloads weights here; mount a volume to keep them across containers.
