@@ -28,7 +28,7 @@ trace = [
 ]
 # `--laya` local tool approvals: a Laya checkpoint instead of the TypeSafe API.
 laya = [
-    "laya>=0.3.3",
+    "laya>=0.4.21",
 ]
 
 [project.scripts]
