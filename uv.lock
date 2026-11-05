@@ -739,7 +739,7 @@ wheels = [
 
 [[package]]
 name = "laya"
-version = "0.3.4"
+version = "0.4.22"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -748,9 +748,9 @@ dependencies = [
     { name = "torch" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/a0/2e9f82f537ae409a176d19406ba1ae64c4e51f171359e60acb8ba0bd6440/laya-0.3.4.tar.gz", hash = "sha256:e0da594d77d2c491aedd3381757052b251a953fc27f03733dcb1c8e761246f3e", size = 49792, upload-time = "2026-09-20T01:34:41.683Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/18/56/3f3c9efa4cb6c8087926548e97cde7c408a1ae49fe2f3bfa962741778672/laya-0.4.22.tar.gz", hash = "sha256:eaed70b09d6555357ef49493d23a80678218159ced7b8d1808b6061b3d2ba529", size = 1397433, upload-time = "2026-11-03T15:35:27.366Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/b4/0f22ac636d2545e6f4a7fcaf3a65bc2715ff1db3a667bc5b930e4f40c057/laya-0.3.4-py3-none-any.whl", hash = "sha256:8bf1c5cc5cbf6abebf63a6346b4babedd5692f88a75aa9e0cc01ed4145a9a14b", size = 34180, upload-time = "2026-09-20T01:34:40.409Z" },
+    { url = "https://files.pythonhosted.org/packages/65/74/ed14b1033ac5303ccc29ecbf3ba6ff24d2d19e58bab0259b3d4e0b4fcb33/laya-0.4.22-py3-none-any.whl", hash = "sha256:7e8cad8ca4cb76588ef608e70ad6753bae612885e015aeeeae7b43268ec5fd5a", size = 464232, upload-time = "2026-11-03T15:35:25.458Z" },
 ]
 
 [[package]]
@@ -1409,7 +1409,7 @@ docs = [
 requires-dist = [
     { name = "gravier", specifier = ">=0.1.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "laya", marker = "extra == 'laya'", specifier = ">=0.3.3" },
+    { name = "laya", marker = "extra == 'laya'", specifier = ">=0.4.21" },
     { name = "msgspec", specifier = ">=0.22.0" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'trace'", specifier = ">=1.45.2" },
     { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = ">=1.45.2" },
