@@ -739,7 +739,7 @@ wheels = [
 
 [[package]]
 name = "laya"
-version = "0.4.22"
+version = "0.4.27"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "huggingface-hub" },
@@ -747,10 +747,11 @@ dependencies = [
     { name = "safetensors" },
     { name = "torch" },
     { name = "transformers" },
+    { name = "vegaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/18/56/3f3c9efa4cb6c8087926548e97cde7c408a1ae49fe2f3bfa962741778672/laya-0.4.22.tar.gz", hash = "sha256:eaed70b09d6555357ef49493d23a80678218159ced7b8d1808b6061b3d2ba529", size = 1397433, upload-time = "2026-11-03T15:35:27.366Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cb/34/e1a057f5d69625364a9180b6e513b6a49587d947ad3cd8b32059257adb9f/laya-0.4.27.tar.gz", hash = "sha256:813a2471dbfd5742723e02080c670d29a49f6bf18bd5efd89faf1842d8a63faa", size = 1459719, upload-time = "2026-11-06T16:44:18.34Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/74/ed14b1033ac5303ccc29ecbf3ba6ff24d2d19e58bab0259b3d4e0b4fcb33/laya-0.4.22-py3-none-any.whl", hash = "sha256:7e8cad8ca4cb76588ef608e70ad6753bae612885e015aeeeae7b43268ec5fd5a", size = 464232, upload-time = "2026-11-03T15:35:25.458Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/e6/00228eb4dd10ab71492a4ecef6e04f94eb442fc59284789a108c7a070a22/laya-0.4.27-py3-none-any.whl", hash = "sha256:68851194dd461c16534c8223bc6530dbcec35ade4e9c6dfc8aefb330de7094f7", size = 495896, upload-time = "2026-11-06T16:44:16.169Z" },
 ]
 
 [[package]]
@@ -1409,7 +1410,7 @@ docs = [
 requires-dist = [
     { name = "gravier", specifier = ">=0.1.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
-    { name = "laya", marker = "extra == 'laya'", specifier = ">=0.4.21" },
+    { name = "laya", marker = "extra == 'laya'", specifier = ">=0.4.22" },
     { name = "msgspec", specifier = ">=0.22.0" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'trace'", specifier = ">=1.45.2" },
     { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = ">=1.45.2" },
@@ -2215,6 +2216,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
+]
+
+[[package]]
+name = "vegaml"
+version = "0.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "transformers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8b/9d/ad9368fcda247a452d8232e740caf0c5935aef4dcdfa5fc136bd0071f2ae/vegaml-0.15.0.tar.gz", hash = "sha256:f9f7df11b2cc9a4030af0d993f83331a06d35cbe949d24a045cb357be99b3120", size = 208056, upload-time = "2026-10-31T08:13:49.528Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/65/4c8b788c6655d3e9399f4d3e7a1cd23f902685068f858b9b1a19268978b0/vegaml-0.15.0-py3-none-any.whl", hash = "sha256:5e6159585b58892bcef8eb58c2c6ff0ee9d1d4cb54db561f4883d2809305d0b9", size = 130879, upload-time = "2026-10-31T08:13:47.874Z" },
 ]
 
 [[package]]
