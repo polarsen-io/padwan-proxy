@@ -28,14 +28,14 @@ trace = [
 ]
 # `--laya` local tool approvals: a Laya checkpoint instead of the TypeSafe API.
 laya = [
-    "laya>=0.4.21",
+    "laya>=0.4.22",
 ]
 
 [project.scripts]
 padwan-proxy = "padwan_proxy:main"
 
 [build-system]
-requires = ["uv_build>=0.13.6,<0.13.7"]
+requires = ["uv_build>=0.13.7,<0.13.8"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
