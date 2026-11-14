@@ -10,7 +10,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "padwan-ai>=0.18.0",
-    "piou>=0.38.2",
+    "piou>=0.38.3",
     "gravier>=0.1.0",
     "orjson>=3.13.0",
     "msgspec>=0.22.0",
@@ -28,14 +28,14 @@ trace = [
 ]
 # `--laya` local tool approvals: a Laya checkpoint instead of the TypeSafe API.
 laya = [
-    "laya>=0.4.21",
+    "laya>=0.4.31",
 ]
 
 [project.scripts]
 padwan-proxy = "padwan_proxy:main"
 
 [build-system]
-requires = ["uv_build>=0.13.6,<0.13.7"]
+requires = ["uv_build>=0.13.7,<0.13.8"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -48,11 +48,11 @@ dev = [
     "starlette>=1.10.0",
     "uvicorn>=0.54.0",
     # http client for ASGIBridge tests
-    "niquests>=3.21.2",
+    "niquests>=3.21.3",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=7.1.0",
-    "ruff>=0.17.3",
+    "ruff>=0.17.4",
     # keep the trace extra type-checkable/testable in dev
     "padwan-ai[langfuse]>=0.18.0",
     "opentelemetry-sdk>=1.45.2",
