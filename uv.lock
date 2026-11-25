@@ -719,7 +719,7 @@ wheels = [
 
 [[package]]
 name = "langfuse"
-version = "4.15.4"
+version = "5.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "backoff" },
@@ -732,9 +732,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b3/0c/ccb04968d47896e9eb7421b6e2e6e8cd510d8fa3e79337092dc734f25543/langfuse-4.15.4.tar.gz", hash = "sha256:b9a36194f4e968206d919313c24ea71c6ea68e21286370b01de752d20b26e7a3", size = 392296, upload-time = "2026-09-16T16:13:05.967Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/37/b3/65dbc94d809676053b65e89fda729ef7d8a1d13bbb89f2ab407639f631f2/langfuse-5.2.0.tar.gz", hash = "sha256:8cde9e91b44b53444906af9b37efa9c29c647a9f45f9f8435a638026cb3d4693", size = 383092, upload-time = "2026-11-05T09:53:48.439Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/bd/8e0cadd69d0855646eda8d584ef4f38ca46cf271553af8ba7f93ae607626/langfuse-4.15.4-py3-none-any.whl", hash = "sha256:8e75c70b1522a722a11ab6c7d88e27534a5d0c3844a1a464ac5eb548b014e9c3", size = 706367, upload-time = "2026-09-16T16:13:07.294Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/48/715e2b612d5d20989e4a338c27d78bef43de327f2192c9b20421f5648868/langfuse-5.2.0-py3-none-any.whl", hash = "sha256:4763cbad358960f1036078a4c6e9f86f04690ea566541709c2c40aa1998e2b0f", size = 660151, upload-time = "2026-11-05T09:53:49.817Z" },
 ]
 
 [[package]]
@@ -1342,16 +1342,16 @@ wheels = [
 
 [[package]]
 name = "padwan-ai"
-version = "0.18.0"
+version = "0.19.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "niquests" },
     { name = "qh3" },
     { name = "urllib3-future" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ab/21/97701619d90fe4975ca80dbf3c3780d03bd0da845718d19a150e78df742d/padwan_ai-0.18.0.tar.gz", hash = "sha256:59d7e6c884226668a781181f28685d3b96bd603f372b8bc1906ed3a5ac0a644c", size = 136788, upload-time = "2026-11-02T19:33:47.216Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/42/02f98a049006fa3f81a1237fff9ffe2818cd7afe6038d6296d447eecdb21/padwan_ai-0.19.2.tar.gz", hash = "sha256:c6285f24d238176ae1a1eec7391be2d0ad276e148d59caf04a9865ca3658cc2f", size = 138389, upload-time = "2026-11-23T21:12:28.783Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ff/3c/305c27609c9470c31aded8eb7866a1439afc8f8cba3428465ba3c1604026/padwan_ai-0.18.0-py3-none-any.whl", hash = "sha256:21341d2d472248446a6a98e916626f9a0eba809496d4aca7826e83235af123f0", size = 163299, upload-time = "2026-11-02T19:33:46.006Z" },
+    { url = "https://files.pythonhosted.org/packages/fa/99/7f1ed2f7f286c23c434f4c343240c36cf1b5c6b2a7f8b0436c46753a12a9/padwan_ai-0.19.2-py3-none-any.whl", hash = "sha256:fe291cb444822f87be2135883fabd21c61adade760d6efa88d151bbbc0b804b0", size = 164881, upload-time = "2026-11-23T21:12:27.619Z" },
 ]
 
 [package.optional-dependencies]
@@ -1414,8 +1414,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'trace'", specifier = ">=1.45.2" },
     { name = "opentelemetry-sdk", marker = "extra == 'trace'", specifier = ">=1.45.2" },
     { name = "orjson", specifier = ">=3.13.0" },
-    { name = "padwan-ai", specifier = ">=0.18.0" },
-    { name = "padwan-ai", extras = ["langfuse"], marker = "extra == 'trace'", specifier = ">=0.18.0" },
+    { name = "padwan-ai", specifier = ">=0.19.2" },
+    { name = "padwan-ai", extras = ["langfuse"], marker = "extra == 'trace'", specifier = ">=0.19.2" },
     { name = "piou", specifier = ">=0.38.3" },
     { name = "python-dotenv", specifier = ">=1.2.4" },
 ]
@@ -1427,7 +1427,7 @@ dev = [
     { name = "niquests", specifier = ">=3.21.3" },
     { name = "opentelemetry-exporter-otlp", specifier = ">=1.45.2" },
     { name = "opentelemetry-sdk", specifier = ">=1.45.2" },
-    { name = "padwan-ai", extras = ["langfuse"], specifier = ">=0.18.0" },
+    { name = "padwan-ai", extras = ["langfuse"], specifier = ">=0.19.2" },
     { name = "pyright", specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.2.0" },
     { name = "pytest-asyncio", specifier = ">=1.5.0" },
@@ -2192,16 +2192,16 @@ wheels = [
 
 [[package]]
 name = "urllib3-future"
-version = "2.25.905"
+version = "2.25.907"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "h11" },
     { name = "jh2" },
     { name = "qh3", marker = "((platform_machine == 'AMD64' and platform_python_implementation == 'CPython') or (platform_machine == 'ARM64' and platform_python_implementation == 'CPython') or (platform_machine == 'aarch64' and platform_python_implementation == 'CPython') or (platform_machine == 'arm64' and platform_python_implementation == 'CPython') or (platform_machine == 'armv7l' and platform_python_implementation == 'CPython') or (platform_machine == 'i686' and platform_python_implementation == 'CPython') or (platform_machine == 'ppc64' and platform_python_implementation == 'CPython') or (platform_machine == 'ppc64le' and platform_python_implementation == 'CPython') or (platform_machine == 'riscv64' and platform_python_implementation == 'CPython') or (platform_machine == 'riscv64gc' and platform_python_implementation == 'CPython') or (platform_machine == 's390x' and platform_python_implementation == 'CPython') or (platform_machine == 'x86' and platform_python_implementation == 'CPython') or (platform_machine == 'x86_64' and platform_python_implementation == 'CPython')) and (sys_platform == 'darwin' or sys_platform == 'linux' or sys_platform == 'win32')" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/36/28/765b30ba80b434803d287f873453463d9eef9d5cb4e28004196460166976/urllib3_future-2.25.905.tar.gz", hash = "sha256:d5bd25dad01d7358b33f4c7b3f225506231158086ff790028c1de5b38c26e89e", size = 1704064, upload-time = "2026-10-28T13:20:47.275Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/30/cf3f81c6c160275c8c0205fd241ff099b5ff2c95cf0463dbde00f9438fad/urllib3_future-2.25.907.tar.gz", hash = "sha256:bbfd8540fc8350200fb7f96441fc53b6209adbd7ce87498744492dc3174fb662", size = 1708257, upload-time = "2026-11-19T09:46:02.591Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/78/e4f6952a009df5f65b3af31b6221d2d660e0a705245676b5fc73508d88ea/urllib3_future-2.25.905-py3-none-any.whl", hash = "sha256:c8e3629be86cf3c074769a23beb2b99993cc3454d2049bd3c0643952f6bfbafb", size = 890513, upload-time = "2026-10-28T13:20:45.319Z" },
+    { url = "https://files.pythonhosted.org/packages/59/e0/c777f53acea0108be931df1dcd15ce2914837965b52ee3cbacb700cbd1b3/urllib3_future-2.25.907-py3-none-any.whl", hash = "sha256:c2538cecdec979f6c1b3f42d1ddf52121a3e0f315d72e47cc1579ab8438de948", size = 890676, upload-time = "2026-11-19T09:46:01.02Z" },
 ]
 
 [[package]]
