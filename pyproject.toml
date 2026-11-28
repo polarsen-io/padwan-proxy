@@ -35,7 +35,7 @@ laya = [
 padwan-proxy = "padwan_proxy:main"
 
 [build-system]
-requires = ["uv_build>=0.13.9,<0.13.10"]
+requires = ["uv_build>=0.13.10,<0.13.11"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
@@ -59,7 +59,7 @@ dev = [
     "opentelemetry-exporter-otlp>=1.45.2",
 ]
 bump = [
-    "commitizen>=4.19.4",
+    "commitizen>=4.20.1",
 ]
 docs = [
     "zensical>=0.0.74",
